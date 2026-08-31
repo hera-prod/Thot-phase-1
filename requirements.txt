@@ -1,0 +1,14 @@
+# Thot Phase 1 — dépendances Python (PyInstaller)
+# Installation sans venv : pip install -r requirements.txt
+# Pour GPU CUDA : pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu121 --force-reinstall --no-cache-dir
+
+llama-cpp-python>=0.3.0
+sqlalchemy>=2.0
+pymupdf>=1.24
+pillow>=10.0
+
+# Build
+pyinstaller>=6.0
+
+# Tests (optionnel)
+pytest>=8.0

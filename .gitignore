@@ -1,0 +1,40 @@
+# Modèles locaux très volumineux
+models/
+*.gguf
+*.safetensors
+
+# Données locales SQLite
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Fichiers Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.env.*
+
+# Frontend
+node_modules/
+frontend/node_modules/
+frontend/dist/
+
+# Tauri / Rust
+src-tauri/target/
+src-tauri/binaries/
+*.AppImage
+*.msi
+*.dmg
+
+# Python packaging
+build/
+dist/
+*.spec
+
+# Fichiers temporaires et système
+tmp/
+*.log
+.DS_Store

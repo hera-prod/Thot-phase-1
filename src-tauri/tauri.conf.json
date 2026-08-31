@@ -1,0 +1,25 @@
+{
+  "productName": "Thot Phase 1",
+  "version": "1.0.0",
+  "identifier": "com.thot.phase1",
+  "build": {
+    "beforeDevCommand": "npm --prefix frontend run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm --prefix frontend run build",
+    "frontendDist": "../frontend/dist"
+  },
+  "app": {
+    "windows": [{ "title": "Thot Phase 1", "width": 1200, "height": 800, "dragDropEnabled": false }],
+    "security": { "csp": null }
+  },
+  "bundle": {
+    "externalBin": ["binaries/thot-sidecar"],
+    "icon": ["icons/icon.png"],
+    "resources": []
+  },
+  "plugins": {
+    "shell": {
+      "open": true
+    }
+  }
+}

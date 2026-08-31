@@ -1,0 +1,27 @@
+# Thot Phase 1 — pyproject.toml (PyInstaller, pas de venv)
+# Build : pip install puis pyinstaller --onedir (pas de uv, pas de .venv)
+# Le sidecar Python est packagé en binaire autonome
+
+[project]
+name = "thot-phase-1"
+version = "1.0.0"
+description = "Thot Phase 1 — Chat + Agent loop (LFM2.5-8B + GLM-OCR + VL-3B)"
+requires-python = ">=3.11"
+dependencies = [
+    "llama-cpp-python>=0.3.0",  # installer avec : pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu121
+    "sqlalchemy>=2.0",
+    "pymupdf>=1.24",
+    "pillow>=10.0",
+    "pyinstaller>=6.0",  # pour packager le sidecar
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]
+pythonpath = ["."]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

@@ -1,0 +1,98 @@
+:root {
+  --thot-canvas: #F7F5F0;
+  --thot-surface: #FCFBF8;
+  --thot-surface-raised: #FFFFFF;
+  --thot-surface-1: #FFFFFF;
+  --thot-surface-2: #FAF8F4;
+  --thot-surface-subtle: #FAF8F4;
+  --thot-sidebar-bg: #F1EFE9;
+
+  --thot-border: #E9E5DD;
+  --thot-border-subtle: #F1EEE8;
+  --thot-border-strong: #D8D3C9;
+
+  --thot-text: #1F2022;
+  --thot-text-muted: #6E6A62;
+  --thot-text-faint: #9A958C;
+
+  --thot-gold: #B89452;
+  --thot-gold-hover: #9C7842;
+  --thot-gold-soft: #F1E7D2;
+
+  --thot-violet: #7046D8;
+  --thot-violet-soft: #F0EBFE;
+
+  --thot-success: #1F9D57;
+  --thot-success-soft: #E3F4E9;
+  --thot-info: #2F6FED;
+  --thot-info-soft: #E7EEFD;
+  --thot-warning: #C7973F;
+  --thot-danger: #C5534A;
+  --thot-danger-soft: #FBEAE9;
+
+  --thot-font-family: "Manrope", -apple-system, sans-serif;
+  --thot-font-mono: ui-monospace, "JetBrains Mono", Menlo, monospace;
+
+  --thot-text-hero: 40px;
+  --thot-text-page-title: 30px;
+  --thot-text-section: 18px;
+  --thot-text-body: 14px;
+  --thot-text-small: 12px;
+  --thot-text-sidebar-item: 15px;
+  --thot-text-logo: 22px;
+
+  --thot-radius-sm: 8px;
+  --thot-radius-md: 12px;
+  --thot-radius-lg: 16px;
+  --thot-radius-xl: 24px;
+  --thot-radius-pill: 999px;
+  --thot-radius-window: 16px;
+  --thot-radius-space-card: 20px;
+
+  --thot-shadow-card: 0 1px 2px rgba(31,32,34,.04), 0 4px 16px rgba(31,32,34,.05);
+  --thot-shadow-float: 0 8px 32px rgba(31,32,34,.10);
+
+  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px;
+  --space-5: 20px; --space-6: 24px; --space-8: 32px; --space-10: 40px; --space-12: 48px;
+
+  --thot-transition-fast: 150ms ease;
+  --thot-active-scale: 0.98;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: var(--thot-font-family);
+  font-size: var(--thot-text-body);
+  color: var(--thot-text);
+  background: var(--thot-canvas);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+:focus-visible {
+  outline: 2px solid var(--thot-gold);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
