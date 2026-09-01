@@ -9,6 +9,7 @@ import {
 import { useAttachmentDraft } from '../../features/attachments/AttachmentDraftContext';
 import { validateAttachments } from '../../features/attachments/attachmentValidation';
 import { showToast } from '../ui/Toast';
+import './Composer.css';
 
 interface DroppedFile {
   file: File;
@@ -27,8 +28,8 @@ export function Composer({ variant, isGenerating, onSend, onStop }: ComposerProp
   const [showTools, setShowTools] = useState(false);
   const { attachments, addFiles, removeAttachment, clearAttachments, isDraggingFiles, setDraggingFiles } = useAttachmentDraft();
   const droppedFiles: DroppedFile[] = attachments.map((a) => ({ file: a.file, previewUrl: a.previewUrl ?? '' }));
-  const isDragging = isDraggingFiles;
-  const setIsDragging = setDraggingFiles;
+  const [isDraggingOverComposer, setIsDraggingOverComposer] = useState(false);
+  const isDraggingGlobal = isDraggingFiles;
   const dragCounterRef = useRef(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -48,18 +49,37 @@ export function Composer({ variant, isGenerating, onSend, onStop }: ComposerProp
     }
   };
 
+  // Voile global + highlight Composer (spec Réponses.md P1)
+  useEffect(() => {
+    const onWindowDragEnter = (e: DragEvent) => { if (e.dataTransfer?.types.includes("Files")) setDraggingFiles(true); };
+    const onWindowDragLeave = (e: DragEvent) => { if (e.relatedTarget === null) setDraggingFiles(false); };
+    const onWindowDragOver = (e: DragEvent) => { if (e.dataTransfer?.types.includes("Files")) e.preventDefault(); };
+    const onWindowDrop = (e: DragEvent) => { if (e.dataTransfer?.types.includes("Files")) e.preventDefault(); setDraggingFiles(false); setIsDraggingOverComposer(false); };
+    window.addEventListener("dragenter", onWindowDragEnter);
+    window.addEventListener("dragleave", onWindowDragLeave);
+    window.addEventListener("dragover", onWindowDragOver);
+    window.addEventListener("drop", onWindowDrop);
+    return () => {
+      window.removeEventListener("dragenter", onWindowDragEnter);
+      window.removeEventListener("dragleave", onWindowDragLeave);
+      window.removeEventListener("dragover", onWindowDragOver);
+      window.removeEventListener("drop", onWindowDrop);
+    };
+  }, [setDraggingFiles]);
+
   const handleDragEnter = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
     dragCounterRef.current += 1;
-    if (e.dataTransfer.types.includes('Files')) setIsDragging(true);
+    if (e.dataTransfer.types.includes('Files')) { setDraggingFiles(true); setIsDraggingOverComposer(true); }
   };
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
     if (e.dataTransfer.types.includes('Files')) {
       e.dataTransfer.dropEffect = 'copy';
-      setIsDragging(true);
+      setDraggingFiles(true);
+      setIsDraggingOverComposer(true);
     }
   };
   const handleDragLeave = (e: React.DragEvent) => {
@@ -68,7 +88,7 @@ export function Composer({ variant, isGenerating, onSend, onStop }: ComposerProp
     dragCounterRef.current -= 1;
     if (dragCounterRef.current <= 0) {
       dragCounterRef.current = 0;
-      setIsDragging(false);
+      setIsDraggingOverComposer(false);
     }
   };
 
@@ -83,7 +103,8 @@ export function Composer({ variant, isGenerating, onSend, onStop }: ComposerProp
     e.preventDefault();
     e.stopPropagation();
     dragCounterRef.current = 0;
-    setIsDragging(false);
+    setIsDraggingOverComposer(false);
+    setDraggingFiles(false);
     const files = Array.from(e.dataTransfer.files);
     if (files.length > 0) processFiles(files);
   };
@@ -125,33 +146,28 @@ export function Composer({ variant, isGenerating, onSend, onStop }: ComposerProp
   } : {};
 
   const wrapperStyle: React.CSSProperties = {
-    background: isDragging ? 'var(--thot-gold-soft)' : 'var(--thot-surface-raised)',
-    borderRadius: 'var(--thot-radius-xl)',
-    boxShadow: 'var(--thot-shadow-float)',
-    padding: variant === 'docked' ? '12px 14px' : '12px 14px',
-    border: `1px ${isDragging ? 'dashed' : 'solid'} ${isDragging ? 'var(--thot-gold)' : 'var(--thot-border)'}`,
     minHeight: variant === 'docked' ? 56 : undefined,
-    transition: 'var(--thot-transition-fast)',
   };
 
+  // Voile d'ambiance page (en-dehors Composer) — spec Réponses.md
+  const showPageAmbient = isDraggingGlobal && !isDraggingOverComposer;
+
   return (
-    <div
-      ref={containerRef}
-      style={{
-        ...containerStyle,
-        ...(isDragging ? {
-          background: variant === 'docked'
-            ? 'linear-gradient(to top, var(--thot-gold-soft) 60%, transparent)'
-            : undefined,
-          borderTop: variant === 'docked' ? '1px dashed var(--thot-gold)' : undefined,
-        } : {}),
-      }}
-      onDragEnter={handleDragEnter}
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
-    >
-      <div style={variant === 'docked' ? innerDockedStyle : undefined}>
+    <>
+      {showPageAmbient && (
+        <div className="pageDragAmbientOverlay" aria-hidden="true">
+          <div className="pageDragHint">Déposez votre fichier dans la barre de saisie</div>
+        </div>
+      )}
+      <div
+        ref={containerRef}
+        style={containerStyle}
+        onDragEnter={handleDragEnter}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+      >
+        <div style={variant === 'docked' ? innerDockedStyle : undefined}>
       {/* Tools panel — Phase 1 minimal */}
       {showTools && (
         <div style={{
@@ -190,15 +206,10 @@ export function Composer({ variant, isGenerating, onSend, onStop }: ComposerProp
       {/* Hidden file input — hash+path : on envoie le binaire au Rust, pas de base64 */}
       <input ref={fileInputRef} type="file" accept="image/png,image/jpeg,image/webp,application/pdf" multiple style={{ display: 'none' }} onChange={handleFileInput} />
 
-      {/* Drop overlay — visible pendant le drag */}
-      {isDragging && (
-        <div style={{
-          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-          padding: '12px', marginBottom: 8, borderRadius: 'var(--thot-radius-md)',
-          background: 'var(--thot-gold-soft)', border: '1px dashed var(--thot-gold)',
-          color: 'var(--thot-gold)', fontSize: 13, fontWeight: 600,
-        }}>
-          <Attach24Regular /> Déposez l'image ou le PDF ici (trombone ou glisser-déposer)
+      {/* Drop overlay — spec animé */}
+      {isDraggingOverComposer && (
+        <div style={{ marginBottom: 8, padding: '2px' }} aria-hidden="true">
+          <span style={{ fontSize: 11, color: 'var(--thot-gold)', fontWeight: 600 }}>Déposez ici pour joindre</span>
         </div>
       )}
 
@@ -222,8 +233,14 @@ export function Composer({ variant, isGenerating, onSend, onStop }: ComposerProp
         </div>
       )}
 
-      {/* Main input row */}
-      <div style={wrapperStyle}>
+      {/* Main input row — animated shell */}
+      <div className={`composerShell ${isDraggingGlobal ? "composerShellAmbientHighlight" : ""} ${isDraggingOverComposer ? "composerShellActiveDrop" : ""}`} style={wrapperStyle}>
+        {isDraggingOverComposer && (
+          <div className="composerDropOverlay">
+            <span className="composerDropIcon">＋</span>
+            <span className="composerDropLabel">Déposez ici pour joindre</span>
+          </div>
+        )}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <button
             onClick={() => setShowTools(!showTools)}
@@ -338,6 +355,7 @@ export function Composer({ variant, isGenerating, onSend, onStop }: ComposerProp
         </div>
       )}
       </div>
-    </div>
+      </div>
+    </>
   );
 }

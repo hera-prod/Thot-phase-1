@@ -1,0 +1,73 @@
+.composerShell {
+  position: relative;
+  border: 1px solid var(--thot-border);
+  border-radius: var(--thot-radius-xl);
+  background: var(--thot-surface-raised);
+  box-shadow: var(--thot-shadow-float);
+  transition: border-color 200ms var(--ease-out, cubic-bezier(0.22,1,0.36,1)), box-shadow 200ms var(--ease-out, cubic-bezier(0.22,1,0.36,1)), transform 200ms var(--ease-out, cubic-bezier(0.22,1,0.36,1)), background-color 200ms var(--ease-out, cubic-bezier(0.22,1,0.36,1));
+}
+
+.composerShellAmbientHighlight {
+  border-color: color-mix(in srgb, var(--thot-gold) 45%, var(--thot-border));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--thot-gold) 12%, transparent);
+  animation: composerPulse 1.4s ease-in-out infinite;
+}
+
+@keyframes composerPulse {
+  0%, 100% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--thot-gold) 10%, transparent); }
+  50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--thot-gold) 18%, transparent); }
+}
+
+.composerShellActiveDrop {
+  transform: scale(1.015);
+  background: color-mix(in srgb, var(--thot-gold) 8%, var(--thot-surface-raised));
+  border-color: var(--thot-gold);
+  border-style: dashed;
+}
+
+.composerDropOverlay {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-radius: var(--thot-radius-xl);
+  background: color-mix(in srgb, var(--thot-gold) 14%, var(--thot-surface-raised) 86%);
+  pointer-events: none;
+  animation: enterSoft 160ms var(--ease-out, cubic-bezier(0.22,1,0.36,1));
+}
+
+.composerDropIcon { font-size: 28px; color: var(--thot-gold); line-height: 1; }
+.composerDropLabel { font-size: 14px; font-weight: 600; color: var(--thot-text); }
+
+.pageDragAmbientOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding-bottom: 140px;
+  background: color-mix(in srgb, #1F2022 8%, transparent);
+  pointer-events: none;
+  animation: enterSoft 160ms var(--ease-out, cubic-bezier(0.22,1,0.36,1));
+}
+
+.pageDragHint {
+  padding: 10px 20px;
+  border-radius: 999px;
+  background: var(--thot-surface-raised);
+  border: 1px solid var(--thot-gold);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--thot-text);
+  box-shadow: 0 8px 24px rgba(38,31,19,0.12);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composerShellAmbientHighlight { animation: none; }
+  .composerShellActiveDrop, .composerDropOverlay { transition: none; animation: none; }
+}

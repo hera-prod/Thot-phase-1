@@ -88,7 +88,13 @@ class ModelManager:
         # on garde le modele chaud pour la prochaine requete (pas de dechargement auto)
 
     def _build_llm_kwargs(self, cfg, n_ctx: int, flash_attn: bool, mmproj: bool = True, extra_layers: int | None = None) -> dict:
-        """Construit kwargs Llama selon config + flash_attn + mmproj."""
+        """Construit kwargs Llama selon config + flash_attn + mmproj (corrige llama_chat_handler -> llama_chat_format)."""
+        # Vérif en amont : module correct existe
+        try:
+            import llama_cpp.llama_chat_format  # noqa: F401
+        except ImportError as exc:
+            raise RuntimeError("llama_cpp.llama_chat_format introuvable — verifiez version llama-cpp-python") from exc
+
         kwargs: dict = {
             "model_path": cfg.path,
             "n_ctx": n_ctx,
@@ -112,28 +118,54 @@ class ModelManager:
                 logger.info(f"  mmproj charge: {cfg.mmproj}")
             if not cfg.chat_handler:
                 raise RuntimeError(f"{cfg.path} is multimodal but no chat_handler configured.")
-            try:
-                from llama_cpp.llama_chat_handler import AutoChatHandler
-                handler = AutoChatHandler.from_model_path(cfg.path, chat_handler_name=cfg.chat_handler)
-                if handler is None:
-                    raise RuntimeError(f"chat_handler {cfg.chat_handler} a retourne None pour {cfg.path}")
-                kwargs["chat_handler"] = handler
-                logger.info(f"  chat_handler: {cfg.chat_handler}")
-            except Exception as e:
-                raise RuntimeError(f"chat_handler {cfg.chat_handler} non charge pour {cfg.path}: {e}") from e
+            # Mapping handler config -> classe réelle (0.3.34 n'a pas LFM2VL, fallback documenté)
+            handler = self._build_vision_handler(cfg, cfg.mmproj if mmproj else None)
+            kwargs["chat_handler"] = handler
+            logger.info(f"  chat_handler: {cfg.chat_handler} -> {handler.__class__.__name__}")
         else:
             if mmproj and cfg.mmproj:
                 kwargs["mmproj"] = cfg.mmproj
                 logger.info(f"  mmproj charge: {cfg.mmproj}")
             if cfg.chat_handler:
                 try:
-                    from llama_cpp.llama_chat_handler import AutoChatHandler
-                    handler = AutoChatHandler.from_model_path(cfg.path, chat_handler_name=cfg.chat_handler)
+                    handler = self._build_vision_handler(cfg, cfg.mmproj)
                     kwargs["chat_handler"] = handler
                     logger.info(f"  chat_handler: {cfg.chat_handler}")
                 except Exception as e:
                     logger.warning(f"chat_handler {cfg.chat_handler} non charge: {e}")
         return kwargs
+
+    def _build_vision_handler(self, cfg, mmproj_path: str | None):
+        """Instancie le bon handler multimodal (LFM2VL > Qwen25VL > Llava)."""
+        if not mmproj_path:
+            raise RuntimeError(f"mmproj_path requis pour {cfg.path}")
+        import llama_cpp.llama_chat_format as fmt
+        # Priorité Réponses.md : LFM2VLChatHandler si disponible
+        candidates = []
+        # Mapping demandé spec : ggml-vision-chat -> LFM2VL, ggml-ocr-chat -> Qwen/GLM
+        if cfg.chat_handler == "ggml-vision-chat":
+            candidates = ["LFM2VLChatHandler", "Qwen25VLChatHandler", "Llava15ChatHandler", "Llava16ChatHandler", "MTMDChatHandler"]
+        elif cfg.chat_handler == "ggml-ocr-chat":
+            candidates = ["Qwen25VLChatHandler", "Llava15ChatHandler", "MTMDChatHandler"]
+        else:
+            candidates = [cfg.chat_handler]
+
+        last_err = None
+        for cls_name in candidates:
+            cls = getattr(fmt, cls_name, None)
+            if cls is None:
+                continue
+            try:
+                # La plupart prennent clip_model_path=mmproj
+                try:
+                    return cls(clip_model_path=mmproj_path)
+                except TypeError:
+                    return cls(mmproj_path)
+            except Exception as e:
+                last_err = e
+                logger.warning(f"Handler {cls_name} echoue: {e}")
+                continue
+        raise RuntimeError(f"Aucun handler multimodal compatible pour {cfg.path} (tentes {candidates}): {last_err}")
 
     def _load_model(self, name: str, estimated_tokens: int, has_image: bool = False):
         """Charge un modele depuis le disque avec les bons parametres (mmproj + chat_handler + flash_attn par modele)."""

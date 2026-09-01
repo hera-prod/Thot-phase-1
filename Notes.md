@@ -18,14 +18,11 @@ Ces fichiers étaient **absents** → pipeline vision **non fonctionnel** (image
 - `flash_attn` maintenu à `True` pour VL-3B (bon pour tiling dynamique 512×512)
 
 ### ✅ Étape 3 — Manager chargé les modèles avec mmproj + handlers (`manager.py`)
-`_load_model()` construit dynamiquement les kwargs Llama :
-- Si `cfg.mmproj` : passe `mmproj` au Llama
-- Si `cfg.chat_handler` : instancie `AutoChatHandler.from_model_path()` via `llama_cpp.llama_chat_handler`
-- Fallbacks en cascade (logging détaillé) :
-  1. config idéale (flash_attn figure + mmproj + handler)
-  2. OOM → partial GPU layers sans mmproj
-  3. Flash désactivé + mmproj handler gardés
-  4. Sans mmproj/chat_handler (si handler provoque échec) → warning "images seront ignorées"
+`_load_model()` construit dynamiquement les kwargs Llama (fix Réponses.md n°5 : `llama_cpp.llama_chat_handler` → `llama_cpp.llama_chat_format`) :
+- Vérif en amont `import llama_chat_format` sinon `RuntimeError` immédiat (au lieu de 3 tentatives coûteuses)
+- Si `cfg.supports_vision` : **fatal** si `mmproj` absent/fichier manquant ou `chat_handler` None
+- `_build_vision_handler()` : mapping `ggml-vision-chat → LFM2VL > Qwen25VL > Llava15/16 > MTMD`, `ggml-ocr-chat → Qwen25VL > Llava15` avec `clip_model_path=mmproj` (0.3.34 n'a pas `LFM2VLChatHandler`, fallback documenté)
+- Fallbacks conservés mais inversés en erreurs explicites quand handler incompatible
 
 ### ✅ Étape 4 — Drag drop corrigé (`tauri.conf.json`)
 - `dragDropEnabled: true` → `false` (une ligne à `src-tauri/tauri.conf.json:12`)
@@ -156,5 +153,21 @@ models/Vision-document/GLM-OCR-f16.gguf 1.7G + mmproj Q8 484M
 - `ChatConversation.tsx` : idem sur `conversationLayout` + overlay doré
 
 > Validation : `npm run build` ✓ 236 modules (299kB) + `py_compile` ✓ — critère : image déposée dans ChatHome ou ChatConversation → preview épinglée avant envoi, aucun 1.8M tokens, smoke test vert.
+
+### ✅ Itération 01/09 — Réponses.md n°5 (handler import + drag animation)
+
+**Diagnostic** : `RuntimeError chat_handler ggml-vision-chat non chargé: No module named 'llama_cpp.llama_chat_handler'` → 3 tentatives échouent identiquement avec même `ImportError` (faux module). Vrai module = `llama_cpp.llama_chat_format` (deepwiki 5.2). Version 0.3.34 expose `Llava15/16, Qwen25VL, MTMD...` mais **pas `LFM2VLChatHandler`** → besoin fallback/version plus récente.
+
+**Manager (`manager.py`)** :
+- `import llama_cpp.llama_chat_format` en amont → `RuntimeError` immédiat si absent
+- `_build_vision_handler(cfg, mmproj_path)` : `ggml-vision-chat → [LFM2VL, Qwen25VL, Llava15, Llava16, MTMD]`, `ggml-ocr-chat → [Qwen25VL, Llava15, MTMD]`, `clip_model_path=mmproj`
+
+**Drag animation (`Composer.tsx` + `Composer.css` (nouveau))** :
+- `isDraggingGlobal` (window `dragenter/leave/over/drop`) + `isDraggingOverComposer` (local) — spec PageAssist
+- `composerShell` + `composerShellAmbientHighlight` (border pulse 1.4s) + `composerShellActiveDrop` (scale 1.015, dashed gold) + `composerDropOverlay` (＋ "Déposez ici")
+- `pageDragAmbientOverlay` (fixed bottom 140px, "Déposez votre fichier dans la barre de saisie") quand `global && !overComposer`
+- `App.tsx` garde `dragDropEnabled:false` (redémarrage Tauri requis)
+
+> Validation : `npm run build` ✓ 237 modules (299kB, +1.1kB CSS) + `py_compile` ✓ + `Llava15ChatHandler(clip_model_path=mmproj BF16)` ✓
 
 ## Architecture système en cours
