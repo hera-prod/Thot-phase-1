@@ -198,4 +198,27 @@ models/Vision-document/GLM-OCR-f16.gguf 1.7G + mmproj Q8 484M
 
 > Validation : `npm run build` ✓ 242 modules (303kB) + `py_compile` ✓ + `pytest test_ocr_policy.py` 8 passed
 
+### ✅ Itération 01/09 — Réponses.md n°7 (images passées + drag natif pur)
+
+**Diagnostic** : Vision OK mais "Est-ce qu'il y a du texte dans la première image ?" → réponse "Il n'y a aucun texte" sans avoir revu l'image (`Fichier détecté : aucun`). VLM confond Spike/Luffy, suit affirmation Wakfu sans preuve.
+
+**Persistance (`models.py` + `media_cache.py` + `main.py`)** :
+- `Source` enrichie : `media_kind, original_name, mime_type, sha256, relative_path, size_bytes, created_at` + `idx_sources_sha256`
+- `media_cache.py` : `get_media_root() = ~/.local/share/thot/media`, `persist_attachment(tmp_path)` → `media/{sha256}.ext` (copy2 si absent), hash 64 hex
+- `main.py` : après `append_message(user)`, `persist_attachment` pour chaque `image_paths` + `Source` insert (attachment, hash, relative_path)
+
+**Ré-inspection (`loop.py`)** :
+- `requires_media_reinspection(message)` : détecte "cette image", "première image", "vérifie", "relis"...
+- `resolve_reinspection_tool(message)` : `texte/écrit/lis/ocr → doc_ocr` sinon `vision`
+- `_get_past_source_path(conv_id, message)` : query `Source` join `Message` ordonné, résout ordinal (première→images[0], deuxième→[1], dernière→[-1], ambigu "cette image" avec 3 images → None → clarification)
+- `run_agent_loop` : si `!image_paths && requires` → `image_paths=[past_path]` avant `resolve_allowed_tools` → `vision/OCR` forcé sur source persistée (évite "j'ai vérifié" sans preuve)
+- `generator.py` : ajout **Règle preuve visuelle** (pas de "j'ai vérifié" sans observation réussie du tour courant)
+
+**Drag natif pur (`tauri.conf.json` + `Composer.tsx`)** :
+- `dragDropEnabled: false → true` (opposé à n°4 — choix **Tauri natif pur** pour desktop, DOM seul pour Vite dev)
+- `Composer` : `lastNativeDropRef` dedup 250ms déjà, `onDragDropEvent` + `stage_dropped_files` (Rust copie vers `drafts/{draftId}/{sha256}.ext` + validation magic bytes/taille) → `AttachmentDraftProvider`
+- Spec : `AppShell` futur `NativeDropProvider` unique, `window_entered/over_composer/staging/accepted` + voile `pageDragAmbientOverlay`
+
+> Validation : `npm run build` ✓ 242 modules (303kB) + `py_compile` ✓ (models, media_cache, loop, generator)
+
 ## Architecture système en cours

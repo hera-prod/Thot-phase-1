@@ -49,8 +49,16 @@ class Source(Base):
     __tablename__ = "sources"
     id = Column(String, primary_key=True)
     msg_id = Column(String, ForeignKey("messages.id", ondelete="CASCADE"))
-    source_type = Column(String)
-    path = Column(String)
-    hash = Column(String)
+    source_type = Column(String)  # attachment
+    path = Column(String)  # legacy absolute path
+    hash = Column(String)  # legacy sha256
+    # Enrichi Réponses.md n°7 : cache persistant
+    media_kind = Column(String, nullable=True)  # image | pdf
+    original_name = Column(String, nullable=True)
+    mime_type = Column(String, nullable=True)
+    sha256 = Column(String, nullable=True)
+    relative_path = Column(String, nullable=True)  # media/{sha256}.ext
+    size_bytes = Column(Integer, nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=True)
     message = relationship("Message", back_populates="sources")
-    __table_args__ = (Index("idx_sources_msg_id", "msg_id"),)
+    __table_args__ = (Index("idx_sources_msg_id", "msg_id"), Index("idx_sources_sha256", "sha256"),)

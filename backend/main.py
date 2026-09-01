@@ -48,10 +48,28 @@ def handle(req: dict):
                 history_shared = get_orchestrator_context(db, conv_id)
             else:
                 history_shared = []
-            # Persiste message user immédiatement (avant LLM) pour historique
+            # Persiste message user immédiatement (avant LLM) pour historique + persistance média P0 n°7
+            user_msg_id = None
             if message and message.strip() and conv is not None:
                 try:
-                    append_message(db, conversation_id=conv_id, role="user", content=message, status="completed")
+                    m = append_message(db, conversation_id=conv_id, role="user", content=message, status="completed")
+                    user_msg_id = m.id
+                    # Persiste chaque pièce jointe dans cache ~/.local/share/thot/media + table sources
+                    if image_paths:
+                        from backend.db.media_cache import persist_attachment
+                        from backend.db.models import Source
+                        import mimetypes, uuid
+                        for p in image_paths:
+                            try:
+                                rel, sha256, size = persist_attachment(p)
+                                src = Source(id=str(uuid.uuid4()), msg_id=m.id, source_type="attachment", path=p, hash=sha256, media_kind="pdf" if p.lower().endswith(".pdf") else "image", original_name=__import__("pathlib").Path(p).name, mime_type=mimetypes.guess_type(p)[0] or ("application/pdf" if p.lower().endswith(".pdf") else "image/png"), sha256=sha256, relative_path=rel, size_bytes=size)
+                                db.add(src)
+                            except Exception as e:
+                                log(f"[media] persist failed {p}: {e}")
+                        try:
+                            db.commit()
+                        except Exception as e:
+                            log(f"[media] commit failed: {e}")
                 except Exception as e:
                     log(f"[db] append user failed: {e}")
         except Exception as e:

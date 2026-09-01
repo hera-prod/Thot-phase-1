@@ -172,6 +172,71 @@ def resolve_allowed_tools(message: str, image_paths: list[str] | None) -> list[s
 def build_attachment_brief(message: str, result: dict) -> str:
     return f"Analyse reussie pour : {message}\n\n{result.get('result','')[:4000]}"
 
+def requires_media_reinspection(message: str) -> bool:
+    text = message.lower()
+    reference_terms = ("cette image","cette photo","la première image","la seconde image","la deuxième image","l'image précédente","l'image d'avant","celle-ci","celle-là","dans l'image","sur l'image","dans la photo","dans le document","vérifie","regarde à nouveau","relis","réanalyse","première image","deuxième image")
+    return any(term in text for term in reference_terms)
+
+def resolve_reinspection_tool(message: str) -> str:
+    text = message.lower()
+    ocr_terms = ("texte","écrit","écriture","lettres","mot","phrase","lis","lire","ocr","transcris","transcrire","panneau","sous-titre","titre")
+    if any(term in text for term in ocr_terms):
+        return "doc_ocr"
+    return "vision"
+
+def _get_past_source_path(conv_id: str, message: str) -> tuple[str, str] | None:
+    """Résout 'première image' etc. vers chemin cache persistant. Retourne (abs_path, original_name) ou None."""
+    try:
+        from backend.db.database import SessionLocal
+        from backend.db.models import Source, Message
+        from sqlalchemy import select
+        db = SessionLocal()
+        try:
+            # Tous les sources de la conversation ordonnés
+            stmt = select(Source).join(Message, Source.msg_id == Message.id).where(Message.conv_id == conv_id).order_by(Source.created_at.asc(), Source.id.asc())
+            rows = list(db.execute(stmt).scalars().all())
+            # Filtre image vs pdf selon message
+            images = [r for r in rows if (r.media_kind == "image" or (r.path and r.path.lower().endswith((".png",".jpg",".jpeg",".webp"))))]
+            pdfs = [r for r in rows if (r.media_kind == "pdf" or (r.path and r.path.lower().endswith(".pdf")))]
+            # Détermine cible ordinale
+            low = message.lower()
+            target = None
+            if "première image" in low or "premiere image" in low or "premier pdf" in low:
+                target = images[0] if images else (pdfs[0] if pdfs else None)
+            elif "deuxième image" in low or "seconde image" in low or "second pdf" in low:
+                target = images[1] if len(images) > 1 else None
+            elif "dernière image" in low or "derniere image" in low or "précédente" in low or "precedente" in low or "avant" in low:
+                target = images[-1] if images else None
+            else:
+                # Par défaut : dernière image (si une seule ambiguïté, on prend dernière)
+                if images:
+                    target = images[-1]
+                elif pdfs:
+                    target = pdfs[-1]
+            if target is None:
+                # Ambigu : plusieurs images et générique "cette image" sans ordinal clair -> None pour demander clarification
+                if len(images) > 1 and "cette image" in low and "première" not in low and "deuxième" not in low and "dernière" not in low:
+                    return None  # caller demandera clarification
+                target = images[-1] if images else None
+            if target is None:
+                return None
+            # Résout chemin absolu depuis relative_path si présent
+            if target.relative_path:
+                media_root = __import__("pathlib").Path.home() / ".local" / "share" / "thot"
+                abs_path = media_root / target.relative_path
+                if abs_path.exists():
+                    return str(abs_path), target.original_name or target.path
+            if target.path and __import__("pathlib").Path(target.path).exists():
+                return target.path, target.original_name or target.path
+            return None
+        finally:
+            try: db.close()
+            except: pass
+    except Exception as e:
+        log(f"[reinspection] resolve failed: {e}")
+        return None
+    return None
+
 
 def _execute_vision(manager, tool_call: dict, image_paths: list[str] | None, request_id: str) -> dict:
     """Exécute vision séquentiel via ModelManager (1 image, 32K, dense) — valide image_path vs image_paths fournis."""
@@ -335,6 +400,16 @@ def run_agent_loop(
 
     history = list(history_shared) if history_shared else []
     assert isinstance(history, list), "history_shared doit être une liste"
+
+    # P0 n°7 — Ré-inspection image passée : si question référence une image antérieure sans nouvelle pièce jointe
+    if not image_paths and requires_media_reinspection(message):
+        past = _get_past_source_path(conv_id, message)
+        if past:
+            past_path, past_name = past
+            image_paths = [past_path]
+            log(f"[reinspection] {past_name} -> {past_path} pour '{message[:50]}'")
+        else:
+            log(f"[reinspection] aucune source resolue pour conv {conv_id}")
 
     registry = get_default_registry()
     # P0 — Politique outils deterministe (Resapes.md n6) : restreint selon fichier + intention

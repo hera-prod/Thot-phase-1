@@ -9,7 +9,7 @@
     "frontendDist": "../frontend/dist"
   },
   "app": {
-    "windows": [{ "title": "Thot Phase 1", "width": 1200, "height": 800, "dragDropEnabled": false }],
+    "windows": [{ "title": "Thot Phase 1", "width": 1200, "height": 800, "dragDropEnabled": true }],
     "security": { "csp": null }
   },
   "bundle": {
