@@ -221,4 +221,19 @@ models/Vision-document/GLM-OCR-f16.gguf 1.7G + mmproj Q8 484M
 
 > Validation : `npm run build` ✓ 242 modules (303kB) + `py_compile` ✓ (models, media_cache, loop, generator)
 
+### ✅ Itération 01/09 — Réponses.md n°8 (orchestrateur sémantique vs mots-clés)
+
+**Diagnostic** : routeur mots-clés `if "écrit" in message` fragile (synonymes, langues, tournures indirectes). "sa main" → aucun outil car mot manquant, alors que c'est le contenu visuel qui justifie réanalyse.
+
+**Changement de paradigme** :
+- Retrait `resolve_allowed_tools()` + `select_attachment_tool()` + `requires_media_reinspection()` comme **filtre outil** — le modèle décide, pas les regex (netfoundry tool-calling sémantique)
+- `vision_general.py` / `vision_ocr.py` : descriptions enrichies — *"Une description textuelle donnée plus tôt n'est jamais une preuve suffisante : si la question porte sur un détail visuel (couleur, objet, texte...), rappelle cet outil sur l'image concernée plutôt que de répondre de mémoire."* + `doc_ocr` : *"Ne réponds jamais sur la présence/absence de texte sans avoir appelé cet outil."*
+- `orchestrator.py` : `SYSTEM_ORCHESTRATOR` + règle fiabilité : *"Si répondre nécessite un détail visuel précis d'un de ces fichiers — qu'il s'agisse d'un fichier tout juste envoyé ou d'un fichier envoyé plus tôt — appelle vision/doc_ocr avant de répondre, même si tu as déjà décrit ce fichier."*
+- `loop.py` : `build_attachment_registry(conv_id, image_paths)` → liste `{index,kind,name,path,first_seen}` depuis DB `Source` + `image_paths` courants, `format_attachment_registry()` injecté comme **bloc système** avant `history` (`messages_orch = [SYSTEM_ORCHESTRATOR, registry_block] + history + [user_content]`), `has_any_media = bool(registry)` → `tool_defs = registry.definitions() if has_any_media else []` (`tool_choice auto` laisse le modèle choisir vision/doc_ocr/aucun), plus de routage forcé `forced_*` ni `skip_orchestrator`
+- Persistance (`media_cache.py`, `main.py`) et `Source` gardés — le registre rend les images historiques visibles à chaque tour, l'orchestrateur peut rappeler `vision(image_path="media/...")` sur n'importe quelle source listée
+
+**Ancien code conservé** : `asks_for_text_extraction`, `resolve_allowed_tools`, `_get_past_source_path` restent dans `loop.py` pour tests `test_ocr_policy.py` mais ne gouvernent plus la décision outil — ils sont dépréciés.
+
+> Validation : `npm run build` ✓ 242 modules (303kB) + `py_compile` ✓ + `pytest test_ocr_policy.py` 8 passed — attente `cargo tauri dev` pour test "Qu'est-ce qu'il y a d'écrit sur sa main ?" → `doc_ocr` sur `spike_bebop.png` via sémantique
+
 ## Architecture système en cours

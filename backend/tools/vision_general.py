@@ -20,8 +20,9 @@ class VisionGeneralArgs(BaseModel):
 class VisionGeneralTool(BaseTool):
     name = "vision"
     description = (
-        "Décris une image généraliste via LFM2.5-VL-3B (32K, dense). "
-        "À utiliser pour photos, screenshots, scènes, objets, couleurs."
+        "Analyse visuelle d'une image avec un modèle de vision. "
+        "Utilise cet outil chaque fois qu'une réponse fiable dépend du contenu visuel réel d'une image — y compris une image déjà envoyée précédemment dans la conversation. "
+        "Une description textuelle donnée plus tôt dans la conversation n'est jamais une preuve suffisante : si la question porte sur un détail visuel (couleur, objet, texte, position, personnage, élément que tu ne peux pas confirmer avec certitude à partir du texte déjà disponible), rappelle cet outil sur l'image concernée plutôt que de répondre de mémoire."
     )
     input_model = VisionGeneralArgs
     timeout_s = 15.0

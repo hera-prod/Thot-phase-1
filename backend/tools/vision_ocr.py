@@ -20,7 +20,8 @@ class VisionOCRArgs(BaseModel):
 class VisionOCRTool(BaseTool):
     name = "doc_ocr"
     description = (
-        "OCR technique via GLM-OCR (8K) sur PDF/image. Extrait markdown fidèle : titres, listes, tableaux."
+        "Extraction fidèle de texte présent dans une image ou un document, y compris un fichier déjà envoyé précédemment dans la conversation. "
+        "Utilise cet outil quand la réponse dépend d'un texte visible sur une image (inscription, étiquette, tatouage, panneau, tableau, document) que tu n'as jamais fait lire par cet outil. Ne réponds jamais sur la présence ou l'absence de texte sans avoir appelé cet outil."
     )
     input_model = VisionOCRArgs
     timeout_s = 15.0

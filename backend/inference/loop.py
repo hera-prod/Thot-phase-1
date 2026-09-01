@@ -237,6 +237,37 @@ def _get_past_source_path(conv_id: str, message: str) -> tuple[str, str] | None:
         return None
     return None
 
+def build_attachment_registry(conv_id: str, image_paths: list[str] | None = None) -> list[dict]:
+    """Registre structuré des sources pour l'orchestrateur — visible à chaque tour (Réponses.md n°8)."""
+    try:
+        from backend.db.database import SessionLocal
+        from backend.db.models import Source, Message
+        from sqlalchemy import select
+        db = SessionLocal()
+        try:
+            stmt = select(Source).join(Message, Source.msg_id == Message.id).where(Message.conv_id == conv_id).order_by(Source.created_at.asc(), Source.id.asc())
+            rows = list(db.execute(stmt).scalars().all())
+            registry = []
+            for i, s in enumerate(rows):
+                registry.append({"index": i+1, "kind": s.media_kind or ("pdf" if (s.path and s.path.lower().endswith(".pdf")) else "image"), "name": s.original_name or Path(s.path).name if s.path else f"source_{i+1}", "path": s.relative_path or s.path, "first_seen_in_message": s.msg_id})
+            # Ajoute les nouveaux image_paths pas encore en DB (tour courant, avant commit) pour visibilité immédiate
+            existing_paths = {r.get("path") for r in registry}
+            for p in (image_paths or []):
+                if p not in existing_paths:
+                    registry.append({"index": len(registry)+1, "kind": "pdf" if p.lower().endswith(".pdf") else "image", "name": Path(p).name, "path": p, "first_seen_in_message": "current"})
+            return registry
+        finally:
+            try: db.close()
+            except: pass
+    except Exception as e:
+        log(f"[registry] build failed: {e}")
+        return [{"index": 1, "kind": "image", "name": Path(p).name, "path": p, "first_seen_in_message": "current"} for p in (image_paths or [])]
+
+def format_attachment_registry(registry: list[dict]) -> str:
+    if not registry:
+        return "Aucun fichier dans cette conversation."
+    return "Fichiers disponibles dans cette conversation :\n" + json.dumps(registry, ensure_ascii=False, indent=2)
+
 
 def _execute_vision(manager, tool_call: dict, image_paths: list[str] | None, request_id: str) -> dict:
     """Exécute vision séquentiel via ModelManager (1 image, 32K, dense) — valide image_path vs image_paths fournis."""
@@ -401,97 +432,43 @@ def run_agent_loop(
     history = list(history_shared) if history_shared else []
     assert isinstance(history, list), "history_shared doit être une liste"
 
-    # P0 n°7 — Ré-inspection image passée : si question référence une image antérieure sans nouvelle pièce jointe
-    if not image_paths and requires_media_reinspection(message):
-        past = _get_past_source_path(conv_id, message)
-        if past:
-            past_path, past_name = past
-            image_paths = [past_path]
-            log(f"[reinspection] {past_name} -> {past_path} pour '{message[:50]}'")
-        else:
-            log(f"[reinspection] aucune source resolue pour conv {conv_id}")
-
+    # Registre d'images pour l'orchestrateur (Réponses.md n°8) — remplace routeur mots-clés
+    attachment_registry = build_attachment_registry(conv_id, image_paths)
+    has_any_media = bool(attachment_registry)
     registry = get_default_registry()
-    # P0 — Politique outils deterministe (Resapes.md n6) : restreint selon fichier + intention
-    allowed_tools = resolve_allowed_tools(message, image_paths)
-    if allowed_tools:
-        all_defs = registry.definitions()
-        def _name(d): return d.get("function",{}).get("name") or d.get("name","")
-        tool_defs = [d for d in all_defs if _name(d) in allowed_tools]
+    tool_defs = registry.definitions() if has_any_media else []
+    # Execution plan basé sur registre (observabilité sémantique, pas lexicale)
+    if attachment_registry:
+        first = attachment_registry[0]
+        emit("execution_plan", {"request_id": request_id, "attachment_kind": first.get("kind"), "intent": "media_available", "selected_tool": None, "selected_model": None, "reason": f"{len(attachment_registry)} fichier(s) disponible(s) dans registre, orchestrateur décide"})
     else:
-        tool_defs = []
-    # Execution plan structuré (observabilité, non raw CoT)
-    attachment_kind = "pdf" if any(Path(p).suffix.lower()==".pdf" for p in (image_paths or [])) else "image" if image_paths else None
-    intent = "text_extraction" if asks_for_text_extraction(message) and attachment_kind else "visual_description" if attachment_kind=="image" else "document_analysis" if attachment_kind=="pdf" else "general"
-    selected = allowed_tools[0] if allowed_tools else None
-    emit("execution_plan", {"request_id": request_id, "attachment_kind": attachment_kind, "intent": intent, "selected_tool": selected, "selected_model": "LFM2.5-VL-3B" if selected=="vision" else "GLM-OCR" if selected=="doc_ocr" else None, "reason": f"Fichier {attachment_kind} + intention {intent}" if attachment_kind else "Aucun fichier"})
+        emit("execution_plan", {"request_id": request_id, "attachment_kind": None, "intent": "general", "selected_tool": None, "selected_model": None, "reason": "Aucun fichier"})
 
     tool_results: list[dict] = []
     brief: str = message  # fallback si pas de brief orchestré
 
-    # P0 — Validation / assertion : log image_paths avant run
+    # Validation : log image_paths avant run
     if image_paths:
         valid_cnt = sum(1 for p in image_paths if p and Path(p).exists())
         from backend.inference.ipc import log as _log
-        _log(f"[loop] image_paths={image_paths} valid={valid_cnt}/{len(image_paths)} mode={mode} allowed={allowed_tools}")
+        _log(f"[loop] image_paths={image_paths} valid={valid_cnt}/{len(image_paths)} mode={mode} registry={len(attachment_registry)}")
         if valid_cnt == 0:
             emit("error", {"request_id": request_id, "code": "image_paths_invalid", "message": "Aucun fichier joint valide trouvé"})
     tool_observations: list[str] = []
-    skip_orchestrator = False
 
     try:
-        # ========== P0 — Routage forcé pièce jointe → outil ==========
-        attachment_tool = allowed_tools[0] if allowed_tools else None
-        # fallback compat si allowed vide mais image_paths present (ancien select)
-        if not attachment_tool:
-            attachment_tool = select_attachment_tool(image_paths)
-        if attachment_tool is not None:
-            att_name = Path(image_paths[0]).name if image_paths and image_paths[0] else "fichier"
-            emit("thinking", {"request_id": request_id, "phase": "tool_running", "text": "Analyse du document joint…" if attachment_tool == "doc_ocr" else "Analyse de l'image jointe…", "iteration": 0})
-            forced_id = f"forced_{attachment_tool}_{request_id[:8]}"
-            forced_args = {"query": message, "image_path": image_paths[0]} if attachment_tool == "vision" else {"query": message, "pdf_path": image_paths[0], "image_path": image_paths[0]}
-            emit("tool_call", {"request_id": request_id, "tool_call_id": forced_id, "tool": attachment_tool, "arguments": forced_args})
-            forced_result: dict | None = None
-            for attempt in range(MAX_RETRY + 1):
-                if attachment_tool == "vision":
-                    forced_result = _execute_vision(manager, {"args": forced_args}, image_paths, request_id)
-                else:
-                    forced_result = _execute_doc_ocr(manager, {"args": forced_args}, request_id)
-                if forced_result["ok"] or attempt >= MAX_RETRY:
-                    break
-                if "timeout" in forced_result["result"].lower():
-                    time.sleep(1)
-                else:
-                    break
-            assert forced_result is not None
-            # emit même en cas d'échec — le générateur doit voir l'erreur structurée
-            emit("tool_result", {"request_id": request_id, "tool_call_id": forced_id, "result": forced_result["result"][:5000], "ok": forced_result["ok"], "latency_ms": forced_result["latency_ms"]})
-            tool_results.append({"tool": attachment_tool, "result": forced_result["result"], "ok": forced_result["ok"], "tool_call_id": forced_id})
-            tool_observations.append(_format_tool_observation(attachment_tool, forced_result, att_name))
-            # Si vision/OCR a échoué, on ne cache pas — le générateur expliquera l'échec
-            if not forced_result["ok"]:
-                brief = f"L'outil {attachment_tool} a échoué sur {att_name}. Expliquer l'échec sans inventer."
-            else:
-                # P0 early exit : media simple reussi -> directement generateur (evite OCR parasite vision->ocr)
-                if len(allowed_tools) == 1:
-                    brief = build_attachment_brief(message, forced_result)
-                    skip_orchestrator = True
-                    log(f"[loop] early exit apres {attachment_tool} succes -> generateur direct")
-
-        # ========== Phase 1 : Orchestrateur ==========
-        orchestrator_done = skip_orchestrator
-        # Construit le message utilisateur avec hint fichiers si présents — chemins EXACTS pour éviter hallucination flat (conv.png)
+        # ========== Phase 1 : Orchestrateur (décision sémantique, pas mots-clés) ==========
         user_content = message
         if image_paths:
-            # Important : l'orchestrateur DOIT utiliser EXACTEMENT ces chemins, ne jamais en inventer
             user_content += f"\n\n[Fichiers joints — utilise EXACTEMENT ces chemins pour vision/doc_ocr, ne les invente pas: {', '.join(image_paths)}]"
 
-        messages_orch: list[dict] = [{"role": "system", "content": SYSTEM_ORCHESTRATOR}] + history
+        # Injection registre comme bloc système avant historique (spec n°8)
+        registry_block = format_attachment_registry(attachment_registry)
+        messages_orch: list[dict] = [{"role": "system", "content": SYSTEM_ORCHESTRATOR}, {"role": "system", "content": registry_block}] + history
         messages_orch.append({"role": "user", "content": user_content})
 
-        if not skip_orchestrator:
-            orchestrator_done = False
-        for iteration in range(0 if skip_orchestrator else MAX_ITER):
+        orchestrator_done = False
+        for iteration in range(MAX_ITER):
             if time.perf_counter() - t0 > TOTAL_TIMEOUT:
                 emit("error", {"request_id": request_id, "code": "total_timeout", "message": "300s dépassé"})
                 break
