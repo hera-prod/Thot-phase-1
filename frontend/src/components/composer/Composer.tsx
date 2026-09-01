@@ -114,25 +114,13 @@ export function Composer({ variant, isGenerating, onSend, onStop }: ComposerProp
     });
   };
 
-  const handleDrop = (e: React.DragEvent) => {
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
     dragCounterRef.current = 0;
     setIsDragging(false);
-    if (e.dataTransfer.files && e.dataTransfer.files.length) {
-      processFiles(e.dataTransfer.files);
-    } else if (e.dataTransfer.items) {
-      // Fallback pour certains navigateurs / Tauri
-      const files: File[] = [];
-      for (let i = 0; i < e.dataTransfer.items.length; i++) {
-        const item = e.dataTransfer.items[i];
-        if (item.kind === 'file') {
-          const f = item.getAsFile();
-          if (f) files.push(f);
-        }
-      }
-      if (files.length) processFiles(files as unknown as FileList);
-    }
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length > 0) processFiles(files);
   };
 
   const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
@@ -157,7 +145,7 @@ export function Composer({ variant, isGenerating, onSend, onStop }: ComposerProp
   };
 
   const containerStyle: React.CSSProperties = variant === 'hero' ? {
-    maxWidth: 960,
+    maxWidth: 820,
     width: '100%',
     margin: '28px auto 0',
   } : {
@@ -170,7 +158,7 @@ export function Composer({ variant, isGenerating, onSend, onStop }: ComposerProp
   };
 
   const innerDockedStyle: React.CSSProperties = variant === 'docked' ? {
-    maxWidth: 960,
+    maxWidth: 820,
     width: '100%',
     margin: '0 auto',
   } : {};

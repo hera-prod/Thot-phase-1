@@ -116,6 +116,22 @@ def _prepare_tool_results(tool_results: list[dict], llm) -> list[dict]:
     return prepared
 
 
+def select_attachment_tool(image_paths: list[str] | None) -> str | None:
+    """Routage déterministe : pdf→doc_ocr, image→vision, rien→None (P0)."""
+    if not image_paths:
+        return None
+    if any(Path(p).suffix.lower() == ".pdf" for p in image_paths):
+        return "doc_ocr"
+    return "vision"
+
+
+def _format_tool_observation(tool: str, result: dict, attachment_name: str) -> str:
+    """Observation structurée pour le générateur (jamais JSON tronqué arbitraire)."""
+    status = "success" if result.get("ok") else "failed"
+    content = result.get("result", "")
+    return f"<tool_observation>\ntool: {tool}\nstatus: {status}\nattachment: {attachment_name}\nresult:\n{content}\n</tool_observation>".strip()
+
+
 def _execute_vision(manager, tool_call: dict, image_paths: list[str] | None, request_id: str) -> dict:
     """Exécute vision séquentiel via ModelManager (1 image, 32K, dense) — valide image_path vs image_paths fournis."""
     start = time.perf_counter()
@@ -274,7 +290,45 @@ def run_agent_loop(
     tool_results: list[dict] = []
     brief: str = message  # fallback si pas de brief orchestré
 
+    # P0 — Validation / assertion : log image_paths avant run
+    if image_paths:
+        valid_cnt = sum(1 for p in image_paths if p and Path(p).exists())
+        from backend.inference.ipc import log as _log
+        _log(f"[loop] image_paths={image_paths} valid={valid_cnt}/{len(image_paths)} mode={mode}")
+        if valid_cnt == 0:
+            emit("error", {"request_id": request_id, "code": "image_paths_invalid", "message": "Aucun fichier joint valide trouvé"})
+    tool_observations: list[str] = []
+
     try:
+        # ========== P0 — Routage forcé pièce jointe → outil ==========
+        attachment_tool = select_attachment_tool(image_paths)
+        if attachment_tool is not None:
+            att_name = Path(image_paths[0]).name if image_paths and image_paths[0] else "fichier"
+            emit("thinking", {"request_id": request_id, "phase": "tool_running", "text": "Analyse du document joint…" if attachment_tool == "doc_ocr" else "Analyse de l'image jointe…", "iteration": 0})
+            forced_id = f"forced_{attachment_tool}_{request_id[:8]}"
+            forced_args = {"query": message, "image_path": image_paths[0]} if attachment_tool == "vision" else {"query": message, "pdf_path": image_paths[0], "image_path": image_paths[0]}
+            emit("tool_call", {"request_id": request_id, "tool_call_id": forced_id, "tool": attachment_tool, "arguments": forced_args})
+            forced_result: dict | None = None
+            for attempt in range(MAX_RETRY + 1):
+                if attachment_tool == "vision":
+                    forced_result = _execute_vision(manager, {"args": forced_args}, image_paths, request_id)
+                else:
+                    forced_result = _execute_doc_ocr(manager, {"args": forced_args}, request_id)
+                if forced_result["ok"] or attempt >= MAX_RETRY:
+                    break
+                if "timeout" in forced_result["result"].lower():
+                    time.sleep(1)
+                else:
+                    break
+            assert forced_result is not None
+            # emit même en cas d'échec — le générateur doit voir l'erreur structurée
+            emit("tool_result", {"request_id": request_id, "tool_call_id": forced_id, "result": forced_result["result"][:5000], "ok": forced_result["ok"], "latency_ms": forced_result["latency_ms"]})
+            tool_results.append({"tool": attachment_tool, "result": forced_result["result"], "ok": forced_result["ok"], "tool_call_id": forced_id})
+            tool_observations.append(_format_tool_observation(attachment_tool, forced_result, att_name))
+            # Si vision/OCR a échoué, on ne cache pas — le générateur expliquera l'échec
+            if not forced_result["ok"]:
+                brief = f"L'outil {attachment_tool} a échoué sur {att_name}. Expliquer l'échec sans inventer."
+
         # ========== Phase 1 : Orchestrateur ==========
         # Construit le message utilisateur avec hint fichiers si présents — chemins EXACTS pour éviter hallucination flat (conv.png)
         user_content = message
@@ -367,6 +421,7 @@ def run_agent_loop(
             messages_orch.append({"role": "assistant", "content": content or "", "tool_calls": tool_calls})
             messages_orch.append({"role": "tool", "tool_call_id": tool_call_id, "content": result["result"]})
             tool_results.append({"tool": tool_name, "result": result["result"], "ok": result["ok"], "tool_call_id": tool_call_id})
+            tool_observations.append(_format_tool_observation(tool_name, result, tool_name))
 
             if len(tool_results) >= MAX_ITER:
                 brief = content.strip() if content.strip() else f"Synthèse nécessaire pour : {message}"
@@ -384,17 +439,17 @@ def run_agent_loop(
 
         with manager.use_model("LFM2.5-8B", estimated_tokens=len(brief) // 4 + 2048) as gen_llm:
             prepared = _prepare_tool_results(tool_results, gen_llm) if tool_results else []
+            # Observations structurées (priorité) + fallback JSON préparé
+            obs_block = "\n\n".join(tool_observations) if tool_observations else ""
+            if not obs_block and prepared:
+                obs_block = json.dumps(prepared, ensure_ascii=False)[:12000]
 
             gen_messages: list[dict] = [{"role": "system", "content": SYSTEM_GENERATOR}] + history
-            if prepared:
-                # Brief + résultats préparés (tronqués/résumés si >8K)
+            if obs_block:
+                gen_messages.append({"role": "system", "content": f"Observations d'outils:\n{obs_block}"})
+            if brief != message:
                 gen_messages.append({"role": "system", "content": f"Brief de l'orchestrateur: {brief}"})
-                gen_messages.append({"role": "system", "content": f"Résultats d'outils:\n{json.dumps(prepared, ensure_ascii=False)[:12000]}"})
-                gen_messages.append({"role": "user", "content": message})
-            else:
-                if brief != message:
-                    gen_messages.append({"role": "system", "content": f"Brief: {brief}"})
-                gen_messages.append({"role": "user", "content": message})
+            gen_messages.append({"role": "user", "content": message})
 
             try:
                 resp_gen = gen_llm.create_chat_completion(

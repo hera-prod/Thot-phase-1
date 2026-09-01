@@ -106,6 +106,7 @@ export function ChatConversation({ mode: propMode }: ChatConversationProps) {
   const [title, setTitle] = useState('');
   const [chatState, setChatState] = useState<ChatState>('idle');
   const [showRail, setShowRail] = useState(true);
+  const debugMode = (() => { try { return localStorage.getItem('thot_debug') === '1'; } catch { return false; } })();
   const scrollRef = useRef<HTMLDivElement>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const currentRequestIdRef = useRef<string | null>(null);
@@ -427,12 +428,12 @@ export function ChatConversation({ mode: propMode }: ChatConversationProps) {
                     }} />
                   </div>
                   <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0 }}>
-                    {msg.thinking && (
+                    {debugMode && msg.thinking && (
                       <div style={{ border: '1px solid var(--thot-border-subtle)', borderRadius: 8, overflow: 'hidden' }}>
                         <button onClick={() => toggleThinking(msg.id)} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', background: 'var(--thot-surface-subtle)', border: 'none', cursor: 'pointer', fontSize: 12, color: 'var(--thot-text-muted)', textAlign: 'left' }}>
                           {msg.thinkingCollapsed ? <ChevronRight24Regular style={{ fontSize: 14 }} /> : <ChevronDown24Regular style={{ fontSize: 14 }} />}
                           <span>
-                            {msg.thinking.includes('[Générateur]') ? 'Générateur — Réflexion' : msg.thinking.includes('[Orchestrateur]') ? 'Orchestrateur — Réflexion' : 'Réflexion'} {msg.thinkingCollapsed ? '(masquée)' : ''}
+                            Détails d'exécution {msg.thinkingCollapsed ? '(masqués)' : ''}
                           </span>
                           <span style={{ marginLeft: 'auto', fontSize: 11, opacity: 0.7 }}>{msg.thinking.length} car.</span>
                         </button>
@@ -451,9 +452,9 @@ export function ChatConversation({ mode: propMode }: ChatConversationProps) {
                       </div>
                     )}
                     <div style={{
-                      background: 'var(--thot-surface-1)', border: '1px solid var(--thot-border-subtle)', borderRadius: 16,
-                      padding: '14px 16px', fontSize: 14, lineHeight: 1.6,
-                      minHeight: 48, boxShadow: '0 1px 2px rgba(0,0,0,0.03)',
+                      background: 'var(--thot-surface-1)', border: '1px solid var(--thot-border-subtle)', borderRadius: 18,
+                      padding: msg.content ? '16px 18px 34px' : '14px 16px', fontSize: 14, lineHeight: 1.6,
+                      minHeight: 48, boxShadow: '0 8px 28px rgba(38,31,19,0.05)', position: 'relative',
                       ...(msg.content ? { whiteSpace: 'pre-wrap' } : { display: 'flex', alignItems: 'center' }),
                     }}>
                       {msg.content || (() => {
@@ -465,12 +466,15 @@ export function ChatConversation({ mode: propMode }: ChatConversationProps) {
                           : 'Génération en cours…';
                         return <span style={{ color: isBusy ? 'var(--thot-text-muted)' : 'var(--thot-text-faint)', animation: isBusy && isLast ? 'pulse 1.5s ease infinite' : 'none' }}>{text}</span>;
                       })()}
+                      {msg.content && (
+                        <button
+                          onClick={() => { navigator.clipboard.writeText(msg.content); showToast({ type: 'success', title: 'Copié', message: 'Réponse copiée' }); }}
+                          style={{ position: 'absolute', right: 12, bottom: 8, background: 'none', border: 'none', cursor: 'pointer', fontSize: 12, color: 'var(--thot-text-faint)', fontFamily: 'inherit' }}
+                        >
+                          Copier
+                        </button>
+                      )}
                     </div>
-                    {msg.content ? (
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 2, fontSize: 12, color: 'var(--thot-text-muted)' }}>
-                        <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'inherit', fontFamily: 'inherit' }}>Copier</button>
-                      </div>
-                    ) : null}
                   </div>
                 </div>
               )

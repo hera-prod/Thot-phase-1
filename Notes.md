@@ -103,4 +103,30 @@ Guillemets doubles, condition explicite `>0`, brutalité zéro conflit d'encodag
 
 > Validation : `npm run build` ✓ (233 modules, 295kB) puis `npm run tauri dev` à tester (drop HTML5 + paste + phases).
 
+### ✅ Itération 01/09 — Réponses.md n°3 (contrat pièce jointe)
+
+**Diagnostic** : image jointe visible dans bulle user mais générateur répond "je n'ai pas accès à l'image" → pipeline fragile (orchestrateur décide seul d'appeler vision, parsing textuel LFM défaillant, réflexion trop visible).
+
+**Composer.tsx** :
+- `handleDrop` simplifié strict spec Réponses.md (`Array.from(e.dataTransfer.files)` → `processFiles`)
+- `maxWidth 960 → 820` (alignement avec grille)
+
+**Backend `loop.py`** :
+- `select_attachment_tool(image_paths)` déterministe : `pdf→doc_ocr`, `image→vision`, `None` sinon
+- Routage **forcé** avant orchestrateur : si `image_paths>0`, `emit thinking tool_running` + `tool_call forced_*` + `execute vision/doc_ocr` + `tool_result` + `tool_results` + `tool_observations` (même en cas d'échec)
+- `image_paths` log/assert avant run (`valid cnt`, `emit error` si 0 valide)
+- `_format_tool_observation()` : `<tool_observation> tool/status/attachment/result </tool_observation>`
+- Append aussi `tool_observations` depuis boucle orchestrateur (si outils supplémentaires)
+- Générateur : `obs_block = join(tool_observations)` prioritaire sur `json.dumps(prepared)`, injecté `Observations d'outils:` + `Brief:` → plus jamais "je n'ai pas accès" si observation fournie
+
+**Backend `generator.py`** :
+- `SYSTEM_GENERATOR` remplacé par règles Réponses.md : 1) fonde sur observation si fournie 2) ne jamais nier accès 3) explique échec sans inventer 4) langue utilisateur 5) cache chemins/raisonnement
+
+**Frontend `ChatConversation.tsx`** :
+- `debugMode = localStorage thot_debug===1` — réflexion `msg.thinking` affichée **uniquement en dev** (renommé "Détails d'exécution")
+- Bulle assistant : `borderRadius 18`, `padding 16 18 34`, `shadow 0 8px 28px`, `position:relative` + bouton `Copier` absolu `right:12 bottom:8` (plus de ligne détachée)
+- Rail conservé sticky mais caché via `ChatConversation.css @media 1040px` (déjà OK)
+
+> Validation : `npm run build` ✓ (233 modules, 295kB) + `py_compile loop.py/generator.py` ✓
+
 ## Architecture système en cours
