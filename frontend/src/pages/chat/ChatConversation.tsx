@@ -12,6 +12,7 @@ import { Composer } from '../../components/composer/Composer';
 import { Tag } from '../../components/ui/Tag';
 import { showToast } from '../../components/ui/Toast';
 import { ToolCallDisplay, type ToolCallStatus } from '../../components/chat/ToolCallDisplay';
+import './ChatConversation.css';
 import { chatSend, saveUpload, listMessages, onMessageStarted, onThinking, onToolCall, onToolResult, onAnswer, onMessageCompleted, onError, onBackendReady } from '../../lib/tauri';
 
 interface ToolCallItem {
@@ -89,7 +90,7 @@ function extractThinkingLeak(content: string): { thinking: string | null; clean:
   return { thinking: null, clean: stripThinkingLeak(content) };
 }
 
-type ChatState = 'idle' | 'sending' | 'streaming';
+type ChatState = 'idle' | 'preparing' | 'orchestrating' | 'tool_running' | 'generating';
 
 interface ChatConversationProps {
   mode?: 'chat' | 'agent';
@@ -132,15 +133,19 @@ export function ChatConversation({ mode: propMode }: ChatConversationProps) {
       const u1 = await onMessageStarted((p) => {
         if (!mounted) return;
         if (currentRequestIdRef.current && p.request_id !== currentRequestIdRef.current) return;
-        setChatState('streaming');
+        setChatState('preparing');
       });
       unsubs.push(u1);
 
       const u2 = await onThinking((p) => {
         if (!mounted) return;
         if (currentRequestIdRef.current && p.request_id !== currentRequestIdRef.current) return;
-        const chunk = (p as unknown as { text?: string; content?: string }).text ?? (p as unknown as { content?: string }).content ?? '';
+        const raw = p as unknown as { text?: string; content?: string; phase?: string; iteration?: number };
+        const chunk = raw.text ?? raw.content ?? '';
         if (!chunk) return;
+        // Phase structurée backend : orchestrator vs generator
+        const isGenerator = raw.phase === 'generator' || (typeof raw.iteration === 'number' && raw.iteration === 99);
+        setChatState(isGenerator ? 'generating' : 'orchestrating');
         setMessages((prev) => {
           const last = prev[prev.length - 1];
           if (last && last.role === 'assistant') {
@@ -155,6 +160,7 @@ export function ChatConversation({ mode: propMode }: ChatConversationProps) {
         if (!mounted) return;
         if (currentRequestIdRef.current && p.request_id !== currentRequestIdRef.current) return;
         const tool = p.tool as 'vision' | 'doc_ocr';
+        setChatState('tool_running');
         setMessages((prev) => {
           const last = prev[prev.length - 1];
           const item: ToolCallItem = { tool_call_id: p.tool_call_id, tool, arguments: p.arguments as Record<string, unknown>, status: 'running' };
@@ -163,7 +169,6 @@ export function ChatConversation({ mode: propMode }: ChatConversationProps) {
           }
           return [...prev, { id: `assistant-${Date.now()}`, role: 'assistant', content: '', toolCalls: [item] }];
         });
-        showToast({ type: 'info', title: toolLabelFr(tool), message: 'Analyse en cours…' });
       });
       unsubs.push(u3);
 
@@ -176,14 +181,15 @@ export function ChatConversation({ mode: propMode }: ChatConversationProps) {
           const updated = m.toolCalls.map((t) => t.tool_call_id === p.tool_call_id ? { ...t, status: (p.ok ? 'completed' : 'error') as ToolCallStatus, result: p.result, ok: p.ok, latency_ms: p.latency_ms } : t);
           return { ...m, toolCalls: updated };
         }));
-        showToast({ type: p.ok ? 'success' : 'error', title: p.ok ? 'Outil terminé' : 'Outil échoué', message: `${p.latency_ms} ms` });
+        if (!p.ok) showToast({ type: 'error', title: 'Outil échoué', message: `${p.latency_ms} ms` });
       });
       unsubs.push(u4);
 
-      // answer — fix réponses vides : supporte p.text et p.content, dedup non agressive, logs
+      // answer — première réponse cache l'activité, passe en generating
       const u5 = await onAnswer((p) => {
         if (!mounted) return;
         if (currentRequestIdRef.current && p.request_id !== currentRequestIdRef.current) return;
+        setChatState('generating');
         const rawPayload = p as unknown as { text?: string; content?: string };
         let raw: string = rawPayload.text ?? rawPayload.content ?? '';
         // Debug log pour diagnostiquer payload vide
@@ -228,9 +234,9 @@ export function ChatConversation({ mode: propMode }: ChatConversationProps) {
       const u6 = await onMessageCompleted((p) => {
         if (!mounted) return;
         if (currentRequestIdRef.current && p.request_id !== currentRequestIdRef.current) return;
+        void p;
         setChatState('idle');
         currentRequestIdRef.current = null;
-        showToast({ type: 'success', title: 'Réponse terminée', message: `${p.tokens_out} tokens` });
       });
       unsubs.push(u6);
 
@@ -302,7 +308,7 @@ export function ChatConversation({ mode: propMode }: ChatConversationProps) {
 
     const request_id = crypto.randomUUID();
     currentRequestIdRef.current = request_id;
-    setChatState('sending');
+    setChatState('preparing');
 
     const previewUrls: string[] = [];
     if (files) {
@@ -337,9 +343,7 @@ export function ChatConversation({ mode: propMode }: ChatConversationProps) {
       }
 
       await chatSend({ request_id, message, mode, image_paths, conv_id: id });
-      setTimeout(() => {
-        if (currentRequestIdRef.current === request_id) setChatState('streaming');
-      }, 600);
+      setChatState('preparing');
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       showToast({ type: 'error', title: 'Erreur d\'envoi', message: msg });
@@ -349,7 +353,6 @@ export function ChatConversation({ mode: propMode }: ChatConversationProps) {
   }, [mode, id]);
 
   const handleStop = useCallback(() => {
-    showToast({ type: 'info', title: 'Arrêt', message: 'Génération interrompue (local).' });
     setChatState('idle');
     currentRequestIdRef.current = null;
   }, []);
@@ -358,7 +361,7 @@ export function ChatConversation({ mode: propMode }: ChatConversationProps) {
     setMessages((prev) => prev.map((m) => m.id === msgId ? { ...m, thinkingCollapsed: !m.thinkingCollapsed } : m));
   }, []);
 
-  const isBusy = chatState === 'sending' || chatState === 'streaming';
+  const isBusy = chatState !== 'idle';
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
@@ -388,9 +391,9 @@ export function ChatConversation({ mode: propMode }: ChatConversationProps) {
         </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: showRail ? '1fr 320px' : '1fr 0', flex: 1, overflow: 'hidden' }}>
-        <div ref={scrollRef} onScroll={handleScroll} style={{ overflow: 'auto', padding: '24px 32px', background: 'var(--thot-canvas)', display: 'flex', flexDirection: 'column' }}>
-          <div style={{ maxWidth: 960, width: '100%', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 20, flex: 1 }}>
+      <div className="conversationLayout">
+        <div ref={scrollRef} onScroll={handleScroll} className="chatColumn">
+          <div className="chatColumnInner">
             {messages.length === 0 && !isBusy && (
               <div style={{ textAlign: 'center', padding: '80px 0', color: 'var(--thot-text-muted)' }}>
                 <p>Commencez une nouvelle conversation en envoyant un message.</p>
@@ -418,9 +421,9 @@ export function ChatConversation({ mode: propMode }: ChatConversationProps) {
                     <span style={{
                       position: 'absolute', bottom: -2, right: -2,
                       width: 8, height: 8, borderRadius: '50%',
-                      background: chatState === 'streaming' ? 'var(--thot-gold)' : 'var(--thot-success)',
+                      background: isBusy ? 'var(--thot-gold)' : 'var(--thot-success)',
                       border: '2px solid var(--thot-surface-raised)',
-                      animation: chatState === 'streaming' ? 'pulse 1.5s ease infinite' : 'none',
+                      animation: isBusy ? 'pulse 1.5s ease infinite' : 'none',
                     }} />
                   </div>
                   <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0 }}>
@@ -455,9 +458,11 @@ export function ChatConversation({ mode: propMode }: ChatConversationProps) {
                     }}>
                       {msg.content || (() => {
                         const isLast = msg.id === messages[messages.length - 1]?.id;
-                        const text = isLast && isBusy
-                          ? (chatState === 'sending' ? 'Préparation de la demande…' : 'Génération en cours…')
-                          : 'En attente de réponse…';
+                        const text = !isLast || !isBusy ? 'En attente de réponse…'
+                          : chatState === 'preparing' ? 'Préparation de la demande…'
+                          : chatState === 'orchestrating' ? 'Analyse de la demande…'
+                          : chatState === 'tool_running' ? 'Analyse en cours…'
+                          : 'Génération en cours…';
                         return <span style={{ color: isBusy ? 'var(--thot-text-muted)' : 'var(--thot-text-faint)', animation: isBusy && isLast ? 'pulse 1.5s ease infinite' : 'none' }}>{text}</span>;
                       })()}
                     </div>
@@ -475,7 +480,7 @@ export function ChatConversation({ mode: propMode }: ChatConversationProps) {
         </div>
 
         {showRail && (
-          <div style={{ borderLeft: '1px solid var(--thot-border-subtle)', display: 'flex', flexDirection: 'column', padding: 16, gap: 16, overflow: 'auto' }}>
+          <div className="detailsRail">
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <span style={{ fontSize: 15, fontWeight: 600 }}>Détails</span>
@@ -494,7 +499,7 @@ export function ChatConversation({ mode: propMode }: ChatConversationProps) {
                   background: isBusy ? 'var(--thot-info)' : 'var(--thot-success)',
                   animation: isBusy ? 'pulse 1.5s ease infinite' : 'none',
                 }} />
-                {chatState === 'sending' ? 'Envoi…' : chatState === 'streaming' ? 'Génération…' : 'Prêt'}
+                {chatState === 'preparing' ? 'Préparation…' : chatState === 'orchestrating' ? 'Analyse…' : chatState === 'tool_running' ? 'Outil en cours…' : chatState === 'generating' ? 'Génération…' : 'Prêt'}
               </div>
               <span style={{ fontSize: 12, color: 'var(--thot-text-faint)' }}>Mode : {mode === 'agent' ? 'agent (vision+doc_ocr)' : 'chat (sans outil)'}</span>
             </div>
@@ -502,11 +507,11 @@ export function ChatConversation({ mode: propMode }: ChatConversationProps) {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--thot-text-muted)' }}>Étapes</span>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
-                <span style={{ width: 8, height: 8, borderRadius: '50%', flexShrink: 0, background: chatState === 'sending' ? 'var(--thot-info)' : 'var(--thot-success)', animation: chatState === 'sending' ? 'pulse 1.5s ease infinite' : 'none' }} />
+                <span style={{ width: 8, height: 8, borderRadius: '50%', flexShrink: 0, background: ['preparing','orchestrating'].includes(chatState) ? 'var(--thot-info)' : chatState === 'idle' ? 'var(--thot-success)' : 'var(--thot-border-strong)', animation: ['preparing','orchestrating'].includes(chatState) ? 'pulse 1.5s ease infinite' : 'none' }} />
                 <span>Préparation de la demande</span>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
-                <span style={{ width: 8, height: 8, borderRadius: '50%', flexShrink: 0, background: chatState === 'streaming' ? 'var(--thot-info)' : chatState === 'idle' && messages.some((m) => m.role === 'assistant' && m.content) ? 'var(--thot-success)' : 'var(--thot-border-strong)', animation: chatState === 'streaming' ? 'pulse 1.5s ease infinite' : 'none' }} />
+                <span style={{ width: 8, height: 8, borderRadius: '50%', flexShrink: 0, background: ['tool_running','generating'].includes(chatState) ? 'var(--thot-info)' : chatState === 'idle' && messages.some((m) => m.role === 'assistant' && m.content) ? 'var(--thot-success)' : 'var(--thot-border-strong)', animation: ['tool_running','generating'].includes(chatState) ? 'pulse 1.5s ease infinite' : 'none' }} />
                 <span>Génération de la réponse</span>
               </div>
             </div>
@@ -534,7 +539,7 @@ export function ChatConversation({ mode: propMode }: ChatConversationProps) {
         )}
       </div>
 
-      <div style={{ flexShrink: 0 }}>
+      <div className="composerDock">
         <Composer
           variant="docked"
           isGenerating={isBusy}

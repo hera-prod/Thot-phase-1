@@ -28,20 +28,8 @@ export function Composer({ variant, isGenerating, onSend, onStop }: ComposerProp
   const fileInputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Tauri natif drag-drop (window) + fallback web — couvre le cas où l'OS drop n'arrive pas en dataTransfer
+  // Empêche le navigateur d'ouvrir le fichier si le drop tombe hors Composer
   useEffect(() => {
-    let unlisten: (() => void) | null = null;
-    // @tauri-apps/api est optionnel en dev web (Vite) — on try/catch
-    import('@tauri-apps/api/event').then(({ listen }) => {
-      // Tauri v2 émet `tauri://drag-drop` avec {paths: string[], position}
-      listen('tauri://drag-drop', (event: unknown) => {
-        const payload = (event as { payload?: { paths?: string[] } }).payload;
-        const paths = (payload as { paths?: string[] })?.paths || [];
-        console.debug('[Composer] tauri://drag-drop', paths);
-      }).then((fn) => { unlisten = fn; }).catch(() => {});
-    }).catch(() => {});
-
-    // Fallback document-level pour capter les drops hors barre (évite que le navigateur ouvre le fichier)
     const onWindowDragOver = (e: DragEvent) => {
       if (e.dataTransfer?.types.includes('Files')) {
         e.preventDefault();
@@ -49,7 +37,6 @@ export function Composer({ variant, isGenerating, onSend, onStop }: ComposerProp
       }
     };
     const onWindowDrop = (e: DragEvent) => {
-      // Laisse Composer gérer en premier via onDrop local ; ce handler global évite le navigate
       if (e.dataTransfer?.types.includes('Files')) {
         e.preventDefault();
       }
@@ -57,11 +44,19 @@ export function Composer({ variant, isGenerating, onSend, onStop }: ComposerProp
     window.addEventListener('dragover', onWindowDragOver);
     window.addEventListener('drop', onWindowDrop);
     return () => {
-      if (unlisten) unlisten();
       window.removeEventListener('dragover', onWindowDragOver);
       window.removeEventListener('drop', onWindowDrop);
     };
   }, []);
+
+  // Nettoyage objectURL si le composant se démonte avec des fichiers en attente
+  useEffect(() => {
+    return () => {
+      droppedFiles.forEach((f) => {
+        if (f.previewUrl) URL.revokeObjectURL(f.previewUrl);
+      });
+    };
+  }, [droppedFiles]);
 
   const handleSend = () => {
     if ((!message.trim() && droppedFiles.length === 0) || isGenerating) return;
@@ -140,20 +135,11 @@ export function Composer({ variant, isGenerating, onSend, onStop }: ComposerProp
     }
   };
 
-  const handlePaste = (e: React.ClipboardEvent) => {
-    const items = e.clipboardData?.items;
-    if (!items) return;
-    const pastedFiles: File[] = [];
-    for (let i = 0; i < items.length; i++) {
-      if (items[i].kind === 'file') {
-        const file = items[i].getAsFile();
-        if (file) pastedFiles.push(file);
-      }
-    }
-    if (pastedFiles.length > 0) {
-      e.preventDefault();
-      processFiles(pastedFiles);
-    }
+  const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = Array.from(e.clipboardData.files);
+    if (files.length === 0) return;
+    e.preventDefault();
+    processFiles(files);
   };
 
   const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -311,7 +297,11 @@ export function Composer({ variant, isGenerating, onSend, onStop }: ComposerProp
               onChange={(e) => setMessage(e.target.value)}
               onKeyDown={handleKeyDown}
               onPaste={handlePaste}
-              placeholder={droppedFiles.length ? 'Pose une question sur le fichier…' : 'Demandez n\'importe quoi…'}i…'}
+              placeholder={
+                droppedFiles.length > 0
+                  ? "Que souhaitez-vous analyser avec ce fichier ?"
+                  : "Ecrivez votre message..."
+              }
               rows={1}
               style={{
                 width: '100%', border: 'none', outline: 'none', resize: 'none',

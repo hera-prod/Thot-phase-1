@@ -57,6 +57,10 @@
 
   --thot-transition-fast: 150ms ease;
   --thot-active-scale: 0.98;
+
+  --motion-fast: 160ms;
+  --motion-normal: 220ms;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 *,
@@ -87,6 +91,33 @@ body {
   outline-offset: 2px;
 }
 
+.enterSoft {
+  animation: enterSoft var(--motion-normal) var(--ease-out);
+}
+
+@keyframes enterSoft {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid color-mix(in srgb, var(--thot-gold) 25%, transparent);
+  border-top-color: var(--thot-gold);
+  border-radius: 50%;
+  animation: spin 800ms linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -94,5 +125,6 @@ body {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }

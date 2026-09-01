@@ -61,4 +61,46 @@ Ces fichiers étaient **absents** → pipeline vision **non fonctionnel** (image
 Maintenu sur tous les prompts (orchestrator, generator, vision). 
 Note : moved language instruction to generator (brief) only. OCR n'a plus de "langue" car GLM-OCR est un marqueur fermé (Text/Table Recognition).
 
+### ✅ Itération 01/09 — Correctifs UI/UX Réponses.md n°2 (build bloquant + phases)
+
+**Blocage** : `Composer.tsx:314` — apostrophe mal échappée + caractères parasites `'}i…'`
+→ `npm run build` échouait. **Patch minimal** :
+```tsx
+placeholder={
+  droppedFiles.length > 0
+    ? "Que souhaitez-vous analyser avec ce fichier ?"
+    : "Ecrivez votre message..."
+}
+```
+Guillemets doubles, condition explicite `>0`, brutalité zéro conflit d'encodage.
+
+**Composer.tsx** :
+- Retrait du listener `tauri://drag-drop` (inutile avec `dragDropEnabled:false`, source de complexité chemins vs File)
+- `handlePaste` simplifié : `Array.from(e.clipboardData.files)` → `processFiles(files)`
+- Ajout `useEffect` cleanup des `objectURL` à l'unmount
+- Déjà OK : `dragDropEnabled:false` + `onPaste` sur `<textarea>`, `processFiles` unifié
+
+**ChatConversation.tsx** :
+- `ChatState` : `idle|sending|streaming` → `idle|preparing|orchestrating|tool_running|generating`
+- `onMessageStarted` → `preparing`, `onThinking` → déduit `phase`/`iteration` (generator=99) → `orchestrating`/`generating`, `onToolCall` → `tool_running`, `onAnswer` → `generating`, `onMessageCompleted` → `idle` (fini le toast "Réponse terminée")
+- Retrait du `setTimeout 600ms` — `setChatState('preparing')` direct après `chatSend`, plus de désync vision longue
+- Retrait toasts `Analyse en cours…` et `Outil terminé` (succès), gardé seulement `Outil échoué` et `Erreur d'envoi`
+- `isBusy = chatState !== 'idle'`, libellés dérivés de `phase` (Préparation/Analyse/Outil/Génération)
+- Nouveau composant `AssistantTurn.tsx` créé (phase centralisée, article unique par tour, activity + toolCards + thinking debug + bubble)
+
+**ToolCallDisplay.tsx** :
+- Fermé : `✓ Vision générale · LFM2.5-VL-3B · 416 car. · 1.24 s` (model + chars + latence visible)
+- Ouvert : Requête + Source `hash 12 chars` + Résultat technique replié + preview 500 chars
+- `spinner` via classe `.spinner`, `enterSoft` animation
+
+**tokens.css** :
+- `--motion-fast/next` + `--ease-out`, `.enterSoft`, `.spinner`, `@keyframes pulse/spin`, `reduced-motion` déjà OK (étendu)
+
+**ChatConversation.css (nouveau)** :
+- `.conversationLayout { grid: minmax(0,820px) 260px; justify:center; gap:32px; width:min(1240px,100%); padding:24px 32px 144px; }`
+- `.chatColumn` + `.chatColumnInner max-width:820px`, `.detailsRail sticky top:24px`, `.composerDock width:min(820px,calc(100vw-64px))`
+- `@media (max-width:1040px)` : block + rail `display:none` + composer `calc(100vw-40px)` — évite la colonne de 600px trop étroite
+
+> Validation : `npm run build` ✓ (233 modules, 295kB) puis `npm run tauri dev` à tester (drop HTML5 + paste + phases).
+
 ## Architecture système en cours
