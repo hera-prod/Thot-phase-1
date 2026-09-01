@@ -255,4 +255,18 @@ models/Vision-document/GLM-OCR-f16.gguf 1.7G + mmproj Q8 484M
 
 > Validation : `py_compile manager.py` ✓, `get_free_vram_mb() = 4448 Mo`, `pytest test_manager_switch.py` passed (5.11s)
 
+### ✅ Itération 01/09 — Réponses.md n°10 (registre manifest + get_source) — adapté code réel
+
+**Diagnostic** : "Qu'en penses-tu ?" + image → registre `1 fichier, orchestrateur décide` mais `DIRECT_ANSWER` sans `vision` → "Je n'ai pas accès". "Revois-là tatouage" → `Fichier détecté : aucun` → pas de référence historique résolue.
+
+**Adaptation code réel** :
+- `models.py` : `Source` + `conversation_id`, `parent_source_id`, `analysis_version`, `last_accessed_at`, `idx_sources_conversation_created` — persiste `conversation_id` dès `main.py` (`Source(..., conversation_id=conv_id)`) pour `build_attachment_registry` sans join lourd
+- `loop.py` : `build_attachment_registry(conv_id, image_paths)` enrichi — `ordinal, id, kind, name, path, message_index, available, previous_analyses` (query `ToolCall` par `msg_id` + `sha256` fallback, `available` via `media/{sha256}.ext` exists), `format_attachment_registry()` → `SOURCES DISPONIBLES` + JSON compact, injecté comme **2e bloc système** avant `history` (`messages_orch = [SYSTEM_ORCHESTRATOR, registry_block] + history + [user_content]`)
+- `loop.py` : **Retrait routage forcé** `select_attachment_tool` + `skip_orchestrator` + `allowed_tools` lexical — `has_any_media = bool(registry)` → `tool_defs = registry.definitions() if has_any_media else []` (`tool_choice auto`), l'orchestrateur avec 4 outils (`vision, doc_ocr, get_source, read_text`) décide sémantiquement
+- `tools/get_source.py` + `read_text.py` **(nouveaux)** : `get_source(source_id, reason)` → `working_path` persistant + `last_accessed_at` update, `read_text(source_id, purpose, max_chars)` UTF-8 tronqué, enregistrés dans `registry.py` `build_default_registry()` → 4 outils
+- `loop.py` : `+ _execute_get_source/read_text` dans boucle orchestrateur (`tool_name == "get_source"/"read_text"`), `get_source → vision` en 2 itérations (séquence `get_source` puis `vision` dans `MAX_ITER=5`)
+- `vision_general.py` / `vision_ocr.py` / `orchestrator.py` : descriptions déjà enrichies n°8, précisé `first_seen=current` pour image nouvellement jointe ("Qu'en penses-tu ?" + image → registre `available oui` → vision obligatoire)
+
+> Validation : `py_compile loop/get_source/read_text/registry/orchestrator` ✓, `npm run build` ✓ 242 modules (303kB) — test attendu : "Qu'en penses-tu ?" + image → `vision(src_pending)` puis "tatouage sur sa peau" → `get_source(src_001) → vision`
+
 ## Architecture système en cours

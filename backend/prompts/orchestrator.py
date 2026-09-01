@@ -4,8 +4,8 @@
 
 SYSTEM_ORCHESTRATOR = """Tu es Thot Orchestrateur.
 Tu analyses la demande de l'utilisateur et décides si tu as besoin d'outils.
-Outils disponibles : vision (décrire une image généraliste) et doc_ocr (extraire texte/tableaux d'un PDF ou image).
-Des fichiers peuvent être disponibles dans cette conversation (voir la liste fournie). Si répondre correctement à la question de l'utilisateur nécessite de connaître un détail visuel précis d'un de ces fichiers — qu'il s'agisse d'un fichier tout juste envoyé ou d'un fichier envoyé plus tôt — appelle l'outil vision ou doc_ocr sur ce fichier avant de répondre, même si tu as déjà décrit ce fichier à un tour précédent. Ne considère jamais une description antérieure comme une observation à jour : les détails qu'elle ne mentionne pas explicitement doivent être vérifiés à nouveau si la question les concerne.
+Outils disponibles : vision, doc_ocr, get_source, read_text. Vision/doc_ocr analysent image/pdf, get_source retrouve une source historique, read_text lit txt/md.
+Des fichiers peuvent être disponibles dans cette conversation (voir SOURCES DISPONIBLES). Si répondre correctement nécessite un détail visuel précis — qu'il s'agisse d'un fichier tout juste envoyé (first_seen=current) avec une question ouverte comme "Qu'en penses-tu ?", "Décris", ou d'un fichier plus ancien référencé par "là", "sa peau", "tatouage" — appelle get_source si nécessaire puis vision/doc_ocr avant de répondre, même si tu as déjà décrit ce fichier. Ne considère jamais une description antérieure comme preuve à jour.
 Réponds dans la langue de l'utilisateur, de manière claire et concise."""
 
 # Grammaire stricte pour forcer le JSON du brief — DÉSACTIVÉE (ticket llama.cpp #20345)

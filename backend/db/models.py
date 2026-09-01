@@ -52,13 +52,17 @@ class Source(Base):
     source_type = Column(String)  # attachment
     path = Column(String)  # legacy absolute path
     hash = Column(String)  # legacy sha256
-    # Enrichi Réponses.md n°7 : cache persistant
-    media_kind = Column(String, nullable=True)  # image | pdf
+    # Enrichi Réponses.md n°7-8 : cache persistant + manifest
+    media_kind = Column(String, nullable=True)  # image | pdf | text | markdown
     original_name = Column(String, nullable=True)
     mime_type = Column(String, nullable=True)
     sha256 = Column(String, nullable=True)
     relative_path = Column(String, nullable=True)  # media/{sha256}.ext
     size_bytes = Column(Integer, nullable=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=True)
+    last_accessed_at = Column(DateTime, nullable=True)
+    conversation_id = Column(String, ForeignKey("conversations.id", ondelete="CASCADE"), nullable=True)
+    parent_source_id = Column(String, ForeignKey("sources.id", ondelete="SET NULL"), nullable=True)
+    analysis_version = Column(Integer, server_default="0", nullable=True)
     message = relationship("Message", back_populates="sources")
-    __table_args__ = (Index("idx_sources_msg_id", "msg_id"), Index("idx_sources_sha256", "sha256"),)
+    __table_args__ = (Index("idx_sources_msg_id", "msg_id"), Index("idx_sources_sha256", "sha256"), Index("idx_sources_conversation_created", "conversation_id", "created_at"),)

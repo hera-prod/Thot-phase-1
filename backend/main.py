@@ -62,7 +62,7 @@ def handle(req: dict):
                         for p in image_paths:
                             try:
                                 rel, sha256, size = persist_attachment(p)
-                                src = Source(id=str(uuid.uuid4()), msg_id=m.id, source_type="attachment", path=p, hash=sha256, media_kind="pdf" if p.lower().endswith(".pdf") else "image", original_name=__import__("pathlib").Path(p).name, mime_type=mimetypes.guess_type(p)[0] or ("application/pdf" if p.lower().endswith(".pdf") else "image/png"), sha256=sha256, relative_path=rel, size_bytes=size)
+                                src = Source(id=str(uuid.uuid4()), msg_id=m.id, conversation_id=conv_id, source_type="attachment", path=p, hash=sha256, media_kind="pdf" if p.lower().endswith(".pdf") else "image", original_name=__import__("pathlib").Path(p).name, mime_type=mimetypes.guess_type(p)[0] or ("application/pdf" if p.lower().endswith(".pdf") else "image/png"), sha256=sha256, relative_path=rel, size_bytes=size, analysis_version=0)
                                 db.add(src)
                             except Exception as e:
                                 log(f"[media] persist failed {p}: {e}")

@@ -16,6 +16,8 @@ interface ToolCallDisplayProps {
 function toolMeta(tool: string): { label: string; model: string } {
   if (tool === 'vision') return { label: 'Vision générale', model: 'LFM2.5-VL-3B' };
   if (tool === 'doc_ocr') return { label: 'Vision OCR document', model: 'GLM-OCR' };
+  if (tool === 'get_source') return { label: 'Récupération source', model: '' };
+  if (tool === 'read_text') return { label: 'Lecture texte', model: '' };
   return { label: tool, model: '' };
 }
 

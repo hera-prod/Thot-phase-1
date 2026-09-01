@@ -238,35 +238,71 @@ def _get_past_source_path(conv_id: str, message: str) -> tuple[str, str] | None:
     return None
 
 def build_attachment_registry(conv_id: str, image_paths: list[str] | None = None) -> list[dict]:
-    """Registre structuré des sources pour l'orchestrateur — visible à chaque tour (Réponses.md n°8)."""
+    """Registre structuré des sources pour l'orchestrateur — visible à chaque tour (Réponses.md n°8-10)."""
     try:
         from backend.db.database import SessionLocal
-        from backend.db.models import Source, Message
+        from backend.db.models import Source, Message, ToolCall
         from sqlalchemy import select
         db = SessionLocal()
         try:
             stmt = select(Source).join(Message, Source.msg_id == Message.id).where(Message.conv_id == conv_id).order_by(Source.created_at.asc(), Source.id.asc())
             rows = list(db.execute(stmt).scalars().all())
+            # Map message_id -> index pour message_index
+            msg_stmt = select(Message).where(Message.conv_id == conv_id).order_by(Message.created_at.asc(), Message.id.asc())
+            msgs = list(db.execute(msg_stmt).scalars().all())
+            msg_index_map = {m.id: idx+1 for idx, m in enumerate(msgs)}
             registry = []
             for i, s in enumerate(rows):
-                registry.append({"index": i+1, "kind": s.media_kind or ("pdf" if (s.path and s.path.lower().endswith(".pdf")) else "image"), "name": s.original_name or Path(s.path).name if s.path else f"source_{i+1}", "path": s.relative_path or s.path, "first_seen_in_message": s.msg_id})
-            # Ajoute les nouveaux image_paths pas encore en DB (tour courant, avant commit) pour visibilité immédiate
+                # previous_analyses depuis ToolCall
+                prev = []
+                try:
+                    tc_stmt = select(ToolCall).where(ToolCall.msg_id == s.msg_id)
+                    tcs = list(db.execute(tc_stmt).scalars().all())
+                    for tc in tcs:
+                        summary = (tc.result or "")[:120].strip()
+                        prev.append({"tool": tc.tool, "status": "success" if tc.ok else "failed", "summary": summary})
+                    # Fallback global si aucun sur ce message mais source hash match ailleurs
+                    if not prev and s.sha256:
+                        all_tc = db.execute(select(ToolCall)).scalars().all()
+                        for tc in all_tc:
+                            args = tc.args or {}
+                            if s.sha256 in str(args) or (s.path and s.path in str(args)):
+                                prev.append({"tool": tc.tool, "status": "success" if tc.ok else "failed", "summary": (tc.result or "")[:120]})
+                                break
+                except Exception:
+                    pass
+                abs_available = False
+                try:
+                    if s.relative_path:
+                        media_root = __import__("pathlib").Path.home() / ".local" / "share" / "thot"
+                        abs_available = (media_root / s.relative_path).exists()
+                    elif s.path:
+                        abs_available = __import__("pathlib").Path(s.path).exists()
+                except Exception:
+                    pass
+                registry.append({"id": s.id, "ordinal": i+1, "index": i+1, "kind": s.media_kind or ("pdf" if (s.path and s.path.lower().endswith(".pdf")) else "image"), "name": s.original_name or Path(s.path).name if s.path else f"source_{i+1}", "path": s.relative_path or s.path, "first_seen_in_message": s.msg_id, "message_index": msg_index_map.get(s.msg_id, 0), "available": abs_available, "previous_analyses": prev})
             existing_paths = {r.get("path") for r in registry}
             for p in (image_paths or []):
-                if p not in existing_paths:
-                    registry.append({"index": len(registry)+1, "kind": "pdf" if p.lower().endswith(".pdf") else "image", "name": Path(p).name, "path": p, "first_seen_in_message": "current"})
+                if p not in existing_paths and p not in {r.get("relative_path") for r in registry}:
+                    registry.append({"id": f"pending_{len(registry)+1}", "ordinal": len(registry)+1, "index": len(registry)+1, "kind": "pdf" if p.lower().endswith(".pdf") else "image", "name": Path(p).name, "path": p, "first_seen_in_message": "current", "message_index": len(msgs)+1, "available": Path(p).exists(), "previous_analyses": []})
             return registry
         finally:
             try: db.close()
             except: pass
     except Exception as e:
         log(f"[registry] build failed: {e}")
-        return [{"index": 1, "kind": "image", "name": Path(p).name, "path": p, "first_seen_in_message": "current"} for p in (image_paths or [])]
+        return [{"id": "pending_1", "ordinal": 1, "index": 1, "kind": "image", "name": Path(p).name, "path": p, "first_seen_in_message": "current", "message_index": 1, "available": True, "previous_analyses": []} for p in (image_paths or [])]
 
 def format_attachment_registry(registry: list[dict]) -> str:
     if not registry:
         return "Aucun fichier dans cette conversation."
-    return "Fichiers disponibles dans cette conversation :\n" + json.dumps(registry, ensure_ascii=False, indent=2)
+    # Manifest compact per spec n°10
+    lines = ["SOURCES DISPONIBLES DANS CETTE CONVERSATION"]
+    for r in registry:
+        prev = r.get("previous_analyses") or []
+        prev_str = f"Analyse précédente : {prev[0]['tool']} {prev[0]['status']} — {prev[0]['summary']}" if prev else "Analyse précédente : aucune"
+        lines.append(f" [{r.get('ordinal')}] source_id={r.get('id')} Type : {r.get('kind')} Nom : {r.get('name')} Tour d'origine : {r.get('message_index')} Disponible : {'oui' if r.get('available') else 'non'} {prev_str} Résumé : {prev[0]['summary'] if prev else ''}".strip())
+    return "\n".join(lines) + "\n\n" + json.dumps([{"id": r["id"], "ordinal": r["ordinal"], "kind": r["kind"], "name": r["name"], "message_index": r["message_index"], "available": r["available"], "previous_analyses": r["previous_analyses"]} for r in registry], ensure_ascii=False, indent=2)
 
 
 def _execute_vision(manager, tool_call: dict, image_paths: list[str] | None, request_id: str) -> dict:
@@ -402,6 +438,72 @@ def _execute_doc_ocr(manager, tool_call: dict, request_id: str) -> dict:
     except Exception as e:
         return {"ok": False, "result": f"[Erreur doc_ocr: {e}]", "latency_ms": int((time.perf_counter() - start) * 1000)}
 
+def _execute_get_source(tool_call: dict) -> dict:
+    start = time.perf_counter()
+    try:
+        args = tool_call.get("args") or tool_call.get("arguments") or {}
+        source_id = args.get("source_id")
+        if not source_id:
+            return {"ok": False, "result": "[get_source: source_id manquant]", "latency_ms": int((time.perf_counter() - start)*1000)}
+        from backend.db.database import SessionLocal
+        from backend.db.models import Source
+        db = SessionLocal()
+        try:
+            src = db.get(Source, source_id)
+            if not src:
+                return {"ok": False, "result": f"[get_source: {source_id} introuvable]", "latency_ms": int((time.perf_counter() - start)*1000)}
+            working_path = None
+            if src.relative_path:
+                media_root = Path.home() / ".local" / "share" / "thot"
+                cand = media_root / src.relative_path
+                if cand.exists():
+                    working_path = str(cand)
+            if not working_path and src.path and Path(src.path).exists():
+                working_path = src.path
+            if not working_path:
+                return {"ok": False, "result": "[get_source: working_path introuvable]", "latency_ms": int((time.perf_counter() - start)*1000)}
+            return {"ok": True, "result": f'{{"source_id":"{src.id}","working_path":"{working_path}","media_kind":"{src.media_kind}","name":"{src.original_name}"}}', "latency_ms": int((time.perf_counter() - start)*1000)}
+        finally:
+            try: db.close()
+            except: pass
+    except Exception as e:
+        return {"ok": False, "result": f"[get_source: {e}]", "latency_ms": int((time.perf_counter() - start)*1000)}
+
+def _execute_read_text(tool_call: dict) -> dict:
+    start = time.perf_counter()
+    try:
+        args = tool_call.get("args") or tool_call.get("arguments") or {}
+        source_id = args.get("source_id")
+        max_chars = int(args.get("max_chars", 10000))
+        if not source_id:
+            return {"ok": False, "result": "[read_text: source_id manquant]", "latency_ms": int((time.perf_counter() - start)*1000)}
+        from backend.db.database import SessionLocal
+        from backend.db.models import Source
+        db = SessionLocal()
+        try:
+            src = db.get(Source, source_id)
+            if not src:
+                return {"ok": False, "result": f"[read_text: {source_id} introuvable]", "latency_ms": int((time.perf_counter() - start)*1000)}
+            working_path = None
+            if src.relative_path:
+                media_root = Path.home() / ".local" / "share" / "thot"
+                cand = media_root / src.relative_path
+                if cand.exists():
+                    working_path = str(cand)
+            if not working_path and src.path and Path(src.path).exists():
+                working_path = src.path
+            if not working_path:
+                return {"ok": False, "result": "[read_text: working_path introuvable]", "latency_ms": int((time.perf_counter() - start)*1000)}
+            text = Path(working_path).read_text(encoding="utf-8", errors="replace")
+            if len(text) > max_chars:
+                text = text[:max_chars] + f"\n[Tronqué]"
+            return {"ok": True, "result": text, "latency_ms": int((time.perf_counter() - start)*1000)}
+        finally:
+            try: db.close()
+            except: pass
+    except Exception as e:
+        return {"ok": False, "result": f"[read_text: {e}]", "latency_ms": int((time.perf_counter() - start)*1000)}
+
 
 def run_agent_loop(
     manager,
@@ -525,13 +627,17 @@ def run_agent_loop(
             tool_call_id = tc.get("id") or f"call_{iteration}_{tool_name}"
             emit("tool_call", {"request_id": request_id, "tool_call_id": tool_call_id, "tool": tool_name, "arguments": args})
 
-            # Exécution avec retry 1x
+            # Exécution avec retry 1x (vision/doc_ocr/get_source/read_text)
             result: dict | None = None
             for attempt in range(MAX_RETRY + 1):
                 if tool_name == "vision":
                     result = _execute_vision(manager, {"args": args}, image_paths, request_id)
                 elif tool_name == "doc_ocr":
                     result = _execute_doc_ocr(manager, {"args": args}, request_id)
+                elif tool_name == "get_source":
+                    result = _execute_get_source({"args": args})
+                elif tool_name == "read_text":
+                    result = _execute_read_text({"args": args})
                 else:
                     result = {"ok": False, "result": f"[Outil inconnu: {tool_name}]", "latency_ms": 0}
                 if result["ok"] or attempt >= MAX_RETRY:

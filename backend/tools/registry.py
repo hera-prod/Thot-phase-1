@@ -8,6 +8,8 @@ from typing import Iterable
 from backend.tools.base import BaseTool
 from backend.tools.vision_general import VisionGeneralTool
 from backend.tools.vision_ocr import VisionOCRTool
+from backend.tools.get_source import GetSourceTool
+from backend.tools.read_text import ReadTextTool
 
 
 class ToolRegistry:
@@ -43,9 +45,9 @@ class ToolRegistry:
 
 
 def build_default_registry() -> ToolRegistry:
-    """Registre Phase 1 : vision + doc_ocr uniquement."""
+    """Registre Phase 1 : vision + doc_ocr + get_source + read_text (Réponses.md n°10)."""
     registry = ToolRegistry()
-    registry.register_many([VisionGeneralTool(), VisionOCRTool()])
+    registry.register_many([VisionGeneralTool(), VisionOCRTool(), GetSourceTool(), ReadTextTool()])
     return registry
 
 
