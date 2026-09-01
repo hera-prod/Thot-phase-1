@@ -13,6 +13,8 @@ import { Tag } from '../../components/ui/Tag';
 import { showToast } from '../../components/ui/Toast';
 import { ToolCallDisplay, type ToolCallStatus } from '../../components/chat/ToolCallDisplay';
 import './ChatConversation.css';
+import { useAttachmentDraft } from '../../features/attachments/AttachmentDraftContext';
+import { useAttachmentDrop } from '../../features/attachments/useAttachmentDrop';
 import { chatSend, saveUpload, listMessages, onMessageStarted, onThinking, onToolCall, onToolResult, onAnswer, onMessageCompleted, onError, onBackendReady } from '../../lib/tauri';
 
 interface ToolCallItem {
@@ -107,6 +109,8 @@ export function ChatConversation({ mode: propMode }: ChatConversationProps) {
   const [chatState, setChatState] = useState<ChatState>('idle');
   const [showRail, setShowRail] = useState(true);
   const debugMode = (() => { try { return localStorage.getItem('thot_debug') === '1'; } catch { return false; } })();
+  const { isDraggingFiles } = useAttachmentDraft();
+  const { handleDragEnter: handlePageDragEnter, handleDragOver: handlePageDragOver, handleDragLeave: handlePageDragLeave, handleDrop: handlePageDrop } = useAttachmentDrop();
   const scrollRef = useRef<HTMLDivElement>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const currentRequestIdRef = useRef<string | null>(null);
@@ -392,7 +396,12 @@ export function ChatConversation({ mode: propMode }: ChatConversationProps) {
         </div>
       </div>
 
-      <div className="conversationLayout">
+      <div className="conversationLayout" onDragEnter={handlePageDragEnter} onDragOver={handlePageDragOver} onDragLeave={handlePageDragLeave} onDrop={handlePageDrop} style={{ position: 'relative' }}>
+        {isDraggingFiles && (
+          <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, background: 'var(--thot-gold-soft)', border: '2px dashed var(--thot-gold)', borderRadius: 12, zIndex: 5, pointerEvents: 'none', fontSize: 14, fontWeight: 600, color: 'var(--thot-gold)' }}>
+            Déposez vos images ou documents ici
+          </div>
+        )}
         <div ref={scrollRef} onScroll={handleScroll} className="chatColumn">
           <div className="chatColumnInner">
             {messages.length === 0 && !isBusy && (

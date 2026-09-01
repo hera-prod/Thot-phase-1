@@ -1,11 +1,14 @@
 // Composer Phase 1 — adapté hash+path (save_upload), plus de base64
-// Fichiers confiés au parent via File[], preview locale via objectURL, upload via Tauri save_upload
+// Fichiers via AttachmentDraftProvider partagé (ChatHome + ChatConversation)
 import { useState, useRef, useEffect } from 'react';
 import {
   Add24Regular, Send24Regular, Mic24Regular,
   Square24Regular, Attach24Regular, Globe24Regular,
   Beaker24Regular, Image24Regular, ChartMultiple24Regular,
 } from '@fluentui/react-icons';
+import { useAttachmentDraft } from '../../features/attachments/AttachmentDraftContext';
+import { validateAttachments } from '../../features/attachments/attachmentValidation';
+import { showToast } from '../ui/Toast';
 
 interface DroppedFile {
   file: File;
@@ -22,48 +25,20 @@ interface ComposerProps {
 export function Composer({ variant, isGenerating, onSend, onStop }: ComposerProps) {
   const [message, setMessage] = useState('');
   const [showTools, setShowTools] = useState(false);
-  const [droppedFiles, setDroppedFiles] = useState<DroppedFile[]>([]);
-  const [isDragging, setIsDragging] = useState(false);
+  const { attachments, addFiles, removeAttachment, clearAttachments, isDraggingFiles, setDraggingFiles } = useAttachmentDraft();
+  const droppedFiles: DroppedFile[] = attachments.map((a) => ({ file: a.file, previewUrl: a.previewUrl ?? '' }));
+  const isDragging = isDraggingFiles;
+  const setIsDragging = setDraggingFiles;
   const dragCounterRef = useRef(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Empêche le navigateur d'ouvrir le fichier si le drop tombe hors Composer
-  useEffect(() => {
-    const onWindowDragOver = (e: DragEvent) => {
-      if (e.dataTransfer?.types.includes('Files')) {
-        e.preventDefault();
-        setIsDragging(true);
-      }
-    };
-    const onWindowDrop = (e: DragEvent) => {
-      if (e.dataTransfer?.types.includes('Files')) {
-        e.preventDefault();
-      }
-    };
-    window.addEventListener('dragover', onWindowDragOver);
-    window.addEventListener('drop', onWindowDrop);
-    return () => {
-      window.removeEventListener('dragover', onWindowDragOver);
-      window.removeEventListener('drop', onWindowDrop);
-    };
-  }, []);
-
-  // Nettoyage objectURL si le composant se démonte avec des fichiers en attente
-  useEffect(() => {
-    return () => {
-      droppedFiles.forEach((f) => {
-        if (f.previewUrl) URL.revokeObjectURL(f.previewUrl);
-      });
-    };
-  }, [droppedFiles]);
-
   const handleSend = () => {
     if ((!message.trim() && droppedFiles.length === 0) || isGenerating) return;
-    const files = droppedFiles.map((d) => d.file);
+    const files = attachments.map((a) => a.file);
     onSend?.(message, files);
     setMessage('');
-    setDroppedFiles((prev) => { prev.forEach((p) => URL.revokeObjectURL(p.previewUrl)); return []; });
+    clearAttachments();
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -98,20 +73,10 @@ export function Composer({ variant, isGenerating, onSend, onStop }: ComposerProp
   };
 
   const processFiles = (files: FileList | File[]) => {
-    const arr = Array.from(files).slice(0, 4 - droppedFiles.length);
-    arr.forEach((file) => {
-      // Accepte PNG/JPG/PDF uniquement, max 20MB PDF / 5MB image (validé aussi côté Rust)
-      const isImage = file.type.startsWith('image/');
-      const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
-      if (!isImage && !isPdf) return;
-      if (file.size > 20 * 1024 * 1024) return;
-      if (isImage && file.size > 5 * 1024 * 1024) return;
-      const previewUrl = isImage ? URL.createObjectURL(file) : '';
-      setDroppedFiles((prev) => {
-        if (prev.length >= 4) return prev;
-        return [...prev, { file, previewUrl }];
-      });
-    });
+    const arr = Array.from(files);
+    const { files: accepted, errors } = validateAttachments(arr);
+    if (errors.length > 0) showToast({ type: 'error', title: 'Fichiers ignores', message: errors.join(', ') });
+    if (accepted.length > 0) addFiles(accepted);
   };
 
   const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
@@ -136,12 +101,8 @@ export function Composer({ variant, isGenerating, onSend, onStop }: ComposerProp
   };
 
   const removeFile = (idx: number) => {
-    setDroppedFiles((prev) => {
-      const copy = [...prev];
-      if (copy[idx].previewUrl) URL.revokeObjectURL(copy[idx].previewUrl);
-      copy.splice(idx, 1);
-      return copy;
-    });
+    const att = attachments[idx];
+    if (att) removeAttachment(att.id);
   };
 
   const containerStyle: React.CSSProperties = variant === 'hero' ? {

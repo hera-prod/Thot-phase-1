@@ -101,17 +101,38 @@ class ModelManager:
             "n_keep": cfg.n_keep,
             "verbose": False,
         }
-        if mmproj and cfg.mmproj:
-            kwargs["mmproj"] = cfg.mmproj
-            logger.info(f"  mmproj charge: {cfg.mmproj}")
-        if cfg.chat_handler:
+        if cfg.supports_vision:
+            if not cfg.mmproj:
+                raise RuntimeError(f"{cfg.path} requires a multimodal projector (mmproj), but none is configured.")
+            if mmproj:
+                from pathlib import Path as _P
+                if not _P(cfg.mmproj).exists():
+                    raise RuntimeError(f"mmproj introuvable: {cfg.mmproj} (GGUF {cfg.path})")
+                kwargs["mmproj"] = cfg.mmproj
+                logger.info(f"  mmproj charge: {cfg.mmproj}")
+            if not cfg.chat_handler:
+                raise RuntimeError(f"{cfg.path} is multimodal but no chat_handler configured.")
             try:
                 from llama_cpp.llama_chat_handler import AutoChatHandler
                 handler = AutoChatHandler.from_model_path(cfg.path, chat_handler_name=cfg.chat_handler)
+                if handler is None:
+                    raise RuntimeError(f"chat_handler {cfg.chat_handler} a retourne None pour {cfg.path}")
                 kwargs["chat_handler"] = handler
                 logger.info(f"  chat_handler: {cfg.chat_handler}")
             except Exception as e:
-                logger.warning(f"chat_handler {cfg.chat_handler} non charge: {e}")
+                raise RuntimeError(f"chat_handler {cfg.chat_handler} non charge pour {cfg.path}: {e}") from e
+        else:
+            if mmproj and cfg.mmproj:
+                kwargs["mmproj"] = cfg.mmproj
+                logger.info(f"  mmproj charge: {cfg.mmproj}")
+            if cfg.chat_handler:
+                try:
+                    from llama_cpp.llama_chat_handler import AutoChatHandler
+                    handler = AutoChatHandler.from_model_path(cfg.path, chat_handler_name=cfg.chat_handler)
+                    kwargs["chat_handler"] = handler
+                    logger.info(f"  chat_handler: {cfg.chat_handler}")
+                except Exception as e:
+                    logger.warning(f"chat_handler {cfg.chat_handler} non charge: {e}")
         return kwargs
 
     def _load_model(self, name: str, estimated_tokens: int, has_image: bool = False):

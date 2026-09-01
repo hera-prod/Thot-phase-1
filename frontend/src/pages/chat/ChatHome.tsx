@@ -5,6 +5,8 @@ import { Chat24Regular, LockClosed24Regular, ChevronRight24Regular, MoreHorizont
 import { Composer } from '../../components/composer/Composer';
 import { showToast } from '../../components/ui/Toast';
 import { listConversations, type ConversationSummary } from '../../lib/tauri';
+import { useAttachmentDraft } from '../../features/attachments/AttachmentDraftContext';
+import { useAttachmentDrop } from '../../features/attachments/useAttachmentDrop';
 
 function relativeDate(dateStr?: string): string {
   if (!dateStr) return '';
@@ -25,6 +27,8 @@ export function ChatHome() {
   const navigate = useNavigate();
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [loading, setLoading] = useState(true);
+  const { isDraggingFiles } = useAttachmentDraft();
+  const { handleDragEnter, handleDragOver, handleDragLeave, handleDrop } = useAttachmentDrop();
 
   useEffect(() => {
     let mounted = true;
@@ -54,7 +58,20 @@ export function ChatHome() {
   };
 
   return (
-    <div style={{ position: 'relative', maxWidth: 960, width: '100%', margin: '0 auto', padding: '56px 32px 32px', minHeight: '100%', display: 'flex', flexDirection: 'column' }}>
+    <div
+      onDragEnter={handleDragEnter}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+      style={{ position: 'relative', maxWidth: 820, width: '100%', margin: '0 auto', padding: '56px 32px 32px', minHeight: '100%', display: 'flex', flexDirection: 'column', background: isDraggingFiles ? 'var(--thot-gold-soft)' : 'transparent', border: isDraggingFiles ? '2px dashed var(--thot-gold)' : '2px dashed transparent', borderRadius: 16, transition: 'var(--thot-transition-fast)' }}
+    >
+      {isDraggingFiles && (
+        <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'rgba(247,245,240,0.9)', borderRadius: 16, zIndex: 10, pointerEvents: 'none' }}>
+          <span style={{ fontSize: 32 }}>⇩</span>
+          <span style={{ fontSize: 16, fontWeight: 600, marginTop: 8 }}>Déposez une image ou un PDF</span>
+          <span style={{ fontSize: 13, color: 'var(--thot-text-muted)', marginTop: 4 }}>Il sera joint à votre prochaine question.</span>
+        </div>
+      )}
       <img
         src="/assets/brand/Thot_logo.svg"
         alt=""

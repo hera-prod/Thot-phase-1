@@ -129,4 +129,32 @@ Guillemets doubles, condition explicite `>0`, brutalité zéro conflit d'encodag
 
 > Validation : `npm run build` ✓ (233 modules, 295kB) + `py_compile loop.py/generator.py` ✓
 
+### ✅ Itération 01/09 — Réponses.md n°4 (mmproj + drag global)
+
+**Diagnostic** : `Requested tokens (1885477) exceed context window of 32768` → base64 traitée comme texte ordinaire (pas de tokens visuels), pas un problème de taille.
+
+**Inventaire** :
+```
+models/Vision-general/LFM2.5-VL-3B-UD-Q4_K_XL.gguf 1.7G + mmproj BF16 856M / F16 854M / Q8 583M
+models/Vision-document/GLM-OCR-f16.gguf 1.7G + mmproj Q8 484M
+```
+→ GGUF + mmproj présents mais handler `ggml-vision-chat`/`ggml-ocr-chat` possiblement incompatible (Llava générique ≠ SigLIP2/NaFlex). Cause racine : handler non branché → `image_url` rendue dans prompt texte → 1.8M tokens.
+
+**Manager (`manager.py`)** :
+- `_build_llm_kwargs` : si `supports_vision` → **fatal** si `mmproj` absent ou fichier inexistant, et si `chat_handler` absent ou `AutoChatHandler` retourne `None` → `RuntimeError` (plus de fallback silencieux)
+
+**Loop (`loop.py`)** :
+- `MAX_VISION_SIDE=1536` + `prepare_vision_image()` : EXIF transpose + thumbnail 1536 + JPEG 88 (protège VRAM/latence, pas de contournement base64)
+- `_execute_vision` : prétraite avant base64, mime toujours `image/jpeg`, log si b64 >4M, catch `exceed context` → `VISION_MULTIMODAL_NOT_INITIALIZED`
+- `backend/tests/manual/test_lfm25_vl.py` : smoke test hors orchestrateur (red_square 64px → "rouge"/"red", assert tokens <<32768)
+
+**Drag global (`frontend`)** :
+- `features/attachments/` **(nouveau)** : `attachmentTypes.ts`, `attachmentValidation.ts` (4 / 5M / 20M), `AttachmentDraftContext.tsx` (Provider au-dessus du Router, survit `ChatHome→ChatConversation`), `useAttachmentDrop.ts`, `AttachmentTray.tsx`
+- `App.tsx` : `AttachmentDraftProvider` + `GlobalDragGuard` (`dragover/drop preventDefault` sans `stopPropagation`)
+- `Composer.tsx` : utilise `useAttachmentDraft` (attachments/addFiles/remove/clear), `validateAttachments`, `showToast`, `maxWidth 820`
+- `ChatHome.tsx` : `onDragEnter/Over/Leave/Drop` sur colonne principale + overlay "Déposez une image ou un PDF" + même `processFiles`
+- `ChatConversation.tsx` : idem sur `conversationLayout` + overlay doré
+
+> Validation : `npm run build` ✓ 236 modules (299kB) + `py_compile` ✓ — critère : image déposée dans ChatHome ou ChatConversation → preview épinglée avant envoi, aucun 1.8M tokens, smoke test vert.
+
 ## Architecture système en cours

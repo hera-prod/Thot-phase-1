@@ -15,7 +15,28 @@ import re
 import time
 from pathlib import Path
 
-from backend.inference.ipc import emit
+from backend.inference.ipc import emit, log
+
+MAX_VISION_SIDE = 1536
+
+def prepare_vision_image(input_path: Path, output_path: Path) -> Path:
+    """Prétraite image pour VL : EXIF transpose + max 1536px + JPEG 88 si besoin."""
+    try:
+        from PIL import Image, ImageOps
+        image = Image.open(input_path)
+        image = ImageOps.exif_transpose(image)
+        # thumbnail garde ratio, ne grossit pas si plus petit
+        image.thumbnail((MAX_VISION_SIDE, MAX_VISION_SIDE))
+        if image.mode not in ("RGB", "L"):
+            image = image.convert("RGB")
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        # JPEG 88 est plus léger que PNG pour VL, qualité suffisante
+        if image.width * image.height > 0:
+            image.save(output_path, format="JPEG", quality=88, optimize=True)
+            return output_path
+    except Exception as e:
+        log(f"[prepare_vision_image] fallback original: {e}")
+    return input_path
 
 # --- Sanitizer backend (filet permanent, ticket llama.cpp #23852) ---
 # LFM2.5-8B peut fuiter <think> inline et [vision(...)] textuel si template non détecté (List of tools: [)
@@ -167,27 +188,43 @@ def _execute_vision(manager, tool_call: dict, image_paths: list[str] | None, req
             img = valid_paths[0] if valid_paths else ""
         if not img or not Path(img).exists():
             return {"ok": False, "result": f"[Erreur vision: fichier introuvable {requested or img}]", "latency_ms": int((time.perf_counter() - start) * 1000)}
-        # Encode en base64 data URL pour garantir que VL voit l'image (file:// non supporté par tous les templates)
+        # Prétraite : max 1536px + JPEG 88 (évite 1.8M tokens base64 comme texte si handler broken, réduit VRAM)
         try:
-            with open(img, "rb") as f:
+            prepared = prepare_vision_image(Path(img), Path(f"/tmp/thot/{request_id}/vision_prepared.jpg"))
+            img_for_vlm = str(prepared)
+        except Exception:
+            img_for_vlm = img
+        # Encode en base64 data URL pour le handler multimodal (ne doit pas être injecté comme texte brut)
+        try:
+            with open(img_for_vlm, "rb") as f:
                 b64 = base64.b64encode(f.read()).decode("utf-8")
-            # Détecte MIME via suffix
-            mime = "image/png" if Path(img).suffix.lower() in (".png",) else "image/jpeg" if Path(img).suffix.lower() in (".jpg", ".jpeg") else "image/webp"
+            # Toujours JPEG après préparation
+            mime = "image/jpeg"
             data_url = f"data:{mime};base64,{b64}"
+            if len(b64) > 4 * 1024 * 1024:
+                log(f"[vision] base64 large {len(b64)} chars (>4M), risque token blowup")
         except Exception as e:
             return {"ok": False, "result": f"[Erreur vision: lecture image {e}]", "latency_ms": int((time.perf_counter() - start) * 1000)}
         with manager.use_model("LFM2.5-VL-3B") as vlm:
-            r = vlm.create_chat_completion(
-                messages=[
-                    {"role": "system", "content": SYSTEM_VISION.format(query=query)},
-                    {"role": "user", "content": [{"type": "text", "text": query or "Décris cette image en détail."}, {"type": "image_url", "image_url": {"url": data_url}}]},
-                ],
-                temperature=0.2,
-                max_tokens=2048,
-            )
+            try:
+                r = vlm.create_chat_completion(
+                    messages=[
+                        {"role": "system", "content": SYSTEM_VISION.format(query=query)},
+                        {"role": "user", "content": [{"type": "text", "text": query or "Décris cette image en détail."}, {"type": "image_url", "image_url": {"url": data_url}}]},
+                    ],
+                    temperature=0.2,
+                    max_tokens=2048,
+                )
+            except Exception as e:
+                # Erreur typique si handler absent : Requested tokens (1885477) exceed context window
+                if "exceed context" in str(e) or "1885477" in str(e) or "Requested tokens" in str(e):
+                    return {"ok": False, "result": "VISION_MULTIMODAL_NOT_INITIALIZED: base64 traite comme texte, mmproj/handler incompatible. Verifiez mmproj et chat_handler LFM2.5-VL-3B.", "latency_ms": int((time.perf_counter() - start) * 1000)}
+                raise
             text = r["choices"][0]["message"]["content"]
             return {"ok": True, "result": text, "latency_ms": int((time.perf_counter() - start) * 1000)}
     except Exception as e:
+        if "VISION_MULTIMODAL" in str(e):
+            return {"ok": False, "result": str(e), "latency_ms": int((time.perf_counter() - start) * 1000)}
         return {"ok": False, "result": f"[Erreur vision: {e}]", "latency_ms": int((time.perf_counter() - start) * 1000)}
 
 
