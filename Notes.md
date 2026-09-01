@@ -170,4 +170,32 @@ models/Vision-document/GLM-OCR-f16.gguf 1.7G + mmproj Q8 484M
 
 > Validation : `npm run build` ✓ 237 modules (299kB, +1.1kB CSS) + `py_compile` ✓ + `Llava15ChatHandler(clip_model_path=mmproj BF16)` ✓
 
+### ✅ Itération 01/09 — Réponses.md n°6 (4 bugs : OCR, tool policy, scroll, drag)
+
+**Diagnostic** : Vision générale ✓ 215 car. 4.70s (VLM OK), mais OCR appelé après vision → `build_system_ocr() takes 1 pos but 2 given` + scroll bloqué + drag absent.
+
+**OCR (`ocr.py`)** :
+- `build_system_ocr(*, task: str)` stable (plus de `query, request_table` positionnel) — `task=text|table|formula` → `Text/Table/Formula Recognition:` + `resolve_ocr_task(query)` + `SYSTEM_OCR=build_system_ocr(task="text")`
+- `loop.py` : `ocr_task=resolve_ocr_task(query)` → `build_system_ocr(task=ocr_task)`
+
+**Outils (`loop.py`)** :
+- `asks_for_text_extraction()` + `resolve_allowed_tools(message, image_paths)` : `pdf→doc_ocr`, `image+OCR intent→doc_ocr`, `image→vision`, `sinon []`
+- `tool_defs` filtrés par `allowed_tools` (plus de `vision+doc_ocr` systématique)
+- `execution_plan` event émis (attachmentKind/intent/selectedTool/reason) — rendu `details` ouvert "Orchestrateur — Plan d'exécution" dans `ChatConversation`
+- `skip_orchestrator` : si `allowed len==1` et `forced ok` → `brief=build_attachment_brief` + `orchestrator_done=True` + `for range(0 if skip else MAX_ITER)` (évite vision→OCR parasite)
+
+**Scroll (`global.css` + `AppShell.tsx` + `ChatConversation.tsx/css`)** :
+- `html,body,#root 100% overflow hidden`, `.appShell flex 100dvh`, `.appMain min 0 flex1`, `.chatPage grid auto minmax(0,1fr) auto`, `.messagesViewport overflow-y auto`
+- `AppShell` : `className appShell/appMain`, `ChatConversation` : `chatPage` + `conversationLayout messagesViewport`
+- `ChatConversation.css` : `conversationLayout` padding 144→36, overflow hidden→min-height 0
+
+**Drag natif (`Composer.tsx` + `tauri.ts` + `ChatHome/ChatConversation`)** :
+- `Composer` : `lastNativeDropRef` dedup 250ms, `onDragDropEvent` Tauri + `stage_dropped_files` invoke (staging Rust si dispo), `console.debug` sinon
+- `tauri.ts` : `onExecutionPlan` ajouté, `App.tsx` garde `dragDropEnabled:false` + `GlobalDragGuard` sans `stopPropagation`
+
+**Tests (`tests/test_ocr_policy.py` 8 tests)** :
+- `build_system_ocr_text/table/formula`, `image→vision`, `image+OCR intent→doc_ocr`, `pdf→doc_ocr`, `no file→[]`, `resolve_ocr_task`
+
+> Validation : `npm run build` ✓ 242 modules (303kB) + `py_compile` ✓ + `pytest test_ocr_policy.py` 8 passed
+
 ## Architecture système en cours

@@ -15,7 +15,7 @@ import { ToolCallDisplay, type ToolCallStatus } from '../../components/chat/Tool
 import './ChatConversation.css';
 import { useAttachmentDraft } from '../../features/attachments/AttachmentDraftContext';
 import { useAttachmentDrop } from '../../features/attachments/useAttachmentDrop';
-import { chatSend, saveUpload, listMessages, onMessageStarted, onThinking, onToolCall, onToolResult, onAnswer, onMessageCompleted, onError, onBackendReady } from '../../lib/tauri';
+import { chatSend, saveUpload, listMessages, onMessageStarted, onThinking, onToolCall, onToolResult, onAnswer, onMessageCompleted, onError, onBackendReady, onExecutionPlan } from '../../lib/tauri';
 
 interface ToolCallItem {
   tool_call_id: string;
@@ -35,6 +35,7 @@ interface Message {
   thinkingCollapsed?: boolean;
   images?: string[]; // objectURL previews (éphémères)
   toolCalls?: ToolCallItem[];
+  executionPlan?: { attachmentKind?: string | null; intent: string; selectedTool?: string | null; selectedModel?: string | null; reason: string };
 }
 
 function stripThinkingLeak(text: string): string {
@@ -253,6 +254,19 @@ export function ChatConversation({ mode: propMode }: ChatConversationProps) {
         currentRequestIdRef.current = null;
       });
       unsubs.push(u7);
+
+      const u8 = await onExecutionPlan((p) => {
+        if (!mounted) return;
+        if (currentRequestIdRef.current && p.request_id !== currentRequestIdRef.current) return;
+        setMessages((prev) => {
+          const last = prev[prev.length - 1];
+          if (last && last.role === 'assistant') {
+            return prev.map((m, idx) => idx === prev.length - 1 ? { ...m, executionPlan: { attachmentKind: p.attachment_kind, intent: p.intent, selectedTool: p.selected_tool, selectedModel: p.selected_model, reason: p.reason } } : m);
+          }
+          return [...prev, { id: `assistant-${Date.now()}`, role: 'assistant', content: '', executionPlan: { attachmentKind: p.attachment_kind, intent: p.intent, selectedTool: p.selected_tool, selectedModel: p.selected_model, reason: p.reason } }];
+        });
+      });
+      unsubs.push(u8);
     };
     setup();
 
@@ -369,8 +383,8 @@ export function ChatConversation({ mode: propMode }: ChatConversationProps) {
   const isBusy = chatState !== 'idle';
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      <div style={{
+    <div className="chatPage" style={{ display: 'grid' }}>
+      <div className="chatHeader" style={{
         height: 56, borderBottom: '1px solid var(--thot-border-subtle)',
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
         padding: '0 24px', flexShrink: 0,
@@ -396,13 +410,13 @@ export function ChatConversation({ mode: propMode }: ChatConversationProps) {
         </div>
       </div>
 
-      <div className="conversationLayout" onDragEnter={handlePageDragEnter} onDragOver={handlePageDragOver} onDragLeave={handlePageDragLeave} onDrop={handlePageDrop} style={{ position: 'relative' }}>
+      <div className="conversationLayout messagesViewport" onDragEnter={handlePageDragEnter} onDragOver={handlePageDragOver} onDragLeave={handlePageDragLeave} onDrop={handlePageDrop} style={{ position: 'relative' }}>
         {isDraggingFiles && (
           <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, background: 'var(--thot-gold-soft)', border: '2px dashed var(--thot-gold)', borderRadius: 12, zIndex: 5, pointerEvents: 'none', fontSize: 14, fontWeight: 600, color: 'var(--thot-gold)' }}>
             Déposez vos images ou documents ici
           </div>
         )}
-        <div ref={scrollRef} onScroll={handleScroll} className="chatColumn">
+        <div ref={scrollRef} onScroll={handleScroll} className="chatColumn messagesViewport" style={{ overflow: 'visible' }}>
           <div className="chatColumnInner">
             {messages.length === 0 && !isBusy && (
               <div style={{ textAlign: 'center', padding: '80px 0', color: 'var(--thot-text-muted)' }}>
@@ -437,6 +451,17 @@ export function ChatConversation({ mode: propMode }: ChatConversationProps) {
                     }} />
                   </div>
                   <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0 }}>
+                    {msg.executionPlan && (
+                      <details open style={{ border: '1px solid var(--thot-border-subtle)', borderRadius: 8, background: 'var(--thot-surface-subtle)', padding: '8px 12px', fontSize: 12 }}>
+                        <summary style={{ cursor: 'pointer', fontWeight: 600 }}>Orchestrateur — Plan d'exécution</summary>
+                        <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                          <span>✓ Fichier détecté : {msg.executionPlan.attachmentKind ?? 'aucun'}</span>
+                          <span>✓ Intention : {msg.executionPlan.intent}</span>
+                          {msg.executionPlan.selectedTool ? <span>✓ Outil retenu : {msg.executionPlan.selectedTool === 'vision' ? 'Vision générale · LFM2.5-VL-3B' : 'Vision OCR document · GLM-OCR'}</span> : <span>→ OCR non requis</span>}
+                          <span style={{ color: 'var(--thot-text-faint)' }}>{msg.executionPlan.reason}</span>
+                        </div>
+                      </details>
+                    )}
                     {debugMode && msg.thinking && (
                       <div style={{ border: '1px solid var(--thot-border-subtle)', borderRadius: 8, overflow: 'hidden' }}>
                         <button onClick={() => toggleThinking(msg.id)} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', background: 'var(--thot-surface-subtle)', border: 'none', cursor: 'pointer', fontSize: 12, color: 'var(--thot-text-muted)', textAlign: 'left' }}>

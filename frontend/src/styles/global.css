@@ -95,11 +95,19 @@ textarea {
   field-sizing: content;
 }
 
-/* Layout fixes Phase 1 — ensure aéré, pas centré étroit */
+/* Layout fixes Phase 1 — ensure aéré, pas centré étroit + scroll viewport unique (Réponses.md n°6) */
+html, body, #root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
 #root {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  height: 100dvh;
 }
 
 main[role="main"] {
@@ -107,6 +115,43 @@ main[role="main"] {
   flex-direction: column;
   min-height: 0;
   min-width: 0;
+  flex: 1;
+  overflow: hidden;
+}
+
+.appShell {
+  display: flex;
+  width: 100%;
+  height: 100dvh;
+  overflow: hidden;
+}
+
+.appMain {
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+}
+
+.chatPage {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.messagesViewport {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.composerDock {
+  grid-row: 3;
+  z-index: 10;
 }
 
 /* Image fallbacks — évite les placeholders bleus ☐ */

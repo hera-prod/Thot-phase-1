@@ -6,15 +6,13 @@
   gap: 32px;
   width: min(1240px, 100%);
   margin: 0 auto;
-  padding: 24px 32px 144px;
-  flex: 1;
-  overflow: hidden;
+  padding: 24px 32px 36px;
+  min-height: 0;
 }
 
 .chatColumn {
   min-width: 0;
-  overflow: auto;
-  padding: 24px 0;
+  min-height: 0;
   background: var(--thot-canvas);
   display: flex;
   flex-direction: column;

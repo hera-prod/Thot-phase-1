@@ -5,6 +5,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { MessageStarted, Thinking, ToolCall, ToolResult, Answer, MessageCompleted, ErrorEvent, BackendReady } from "../types/ipc";
 
+export type ExecutionPlan = { request_id: string; attachment_kind?: string | null; intent: string; selected_tool?: string | null; selected_model?: string | null; reason: string };
+
 // === INVOKE : Frontend → Rust → Python (stdin) ===
 
 export async function chatSend(params: {
@@ -80,3 +82,4 @@ export function onAnswer(cb: (p: Answer) => void) { return listen<Answer>("answe
 export function onMessageCompleted(cb: (p: MessageCompleted) => void) { return listen<MessageCompleted>("message_completed", e => cb(e.payload)); }
 export function onError(cb: (p: ErrorEvent) => void) { return listen<ErrorEvent>("error", e => cb(e.payload)); }
 export function onBackendReady(cb: (p: BackendReady) => void) { return listen<BackendReady>("backend_ready", e => cb(e.payload)); }
+export function onExecutionPlan(cb: (p: ExecutionPlan) => void) { return listen<ExecutionPlan>("execution_plan", e => cb(e.payload)); }

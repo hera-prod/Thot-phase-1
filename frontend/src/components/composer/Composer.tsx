@@ -31,6 +31,7 @@ export function Composer({ variant, isGenerating, onSend, onStop }: ComposerProp
   const [isDraggingOverComposer, setIsDraggingOverComposer] = useState(false);
   const isDraggingGlobal = isDraggingFiles;
   const dragCounterRef = useRef(0);
+  const lastNativeDropRef = useRef(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -49,7 +50,7 @@ export function Composer({ variant, isGenerating, onSend, onStop }: ComposerProp
     }
   };
 
-  // Voile global + highlight Composer (spec Réponses.md P1)
+  // Voile global + highlight Composer (spec Réponses.md P1) + fallback Tauri natif (P0 n°6)
   useEffect(() => {
     const onWindowDragEnter = (e: DragEvent) => { if (e.dataTransfer?.types.includes("Files")) setDraggingFiles(true); };
     const onWindowDragLeave = (e: DragEvent) => { if (e.relatedTarget === null) setDraggingFiles(false); };
@@ -59,11 +60,33 @@ export function Composer({ variant, isGenerating, onSend, onStop }: ComposerProp
     window.addEventListener("dragleave", onWindowDragLeave);
     window.addEventListener("dragover", onWindowDragOver);
     window.addEventListener("drop", onWindowDrop);
+    // Fallback Tauri natif (quand HTML5 File[] non reçu) — staging Rust si disponible
+    let unlisten: (() => void) | undefined;
+    import("@tauri-apps/api/webviewWindow").then(({ getCurrentWebviewWindow }) => {
+      getCurrentWebviewWindow().onDragDropEvent((event) => {
+        if ((event as unknown as { payload: { type: string } }).payload?.type !== "drop") return;
+        lastNativeDropRef.current = Date.now();
+        const paths = (event as unknown as { payload: { paths: string[] } }).payload.paths ?? [];
+        // Si Rust stage_dropped_files existe, l'appeler ; sinon log
+        import("@tauri-apps/api/core").then(({ invoke }) => {
+          invoke("stage_dropped_files", { paths, draftId: "global" }).then((staged: unknown) => {
+            const arr = staged as Array<{ stagedPath: string; name: string; mime: string }>;
+            if (Array.isArray(arr) && arr.length) {
+              showToast({ type: "success", title: "Fichiers reçus (Tauri)", message: `${arr.length} fichier(s)` });
+            }
+          }).catch(() => {
+            // Pas de commande Rust encore — fallback : paths déjà loggés, HTML5 reste prioritaire
+            console.debug("[Composer] Tauri drop paths", paths);
+          });
+        }).catch(() => {});
+      }).then((fn) => { unlisten = fn; }).catch(() => {});
+    }).catch(() => {});
     return () => {
       window.removeEventListener("dragenter", onWindowDragEnter);
       window.removeEventListener("dragleave", onWindowDragLeave);
       window.removeEventListener("dragover", onWindowDragOver);
       window.removeEventListener("drop", onWindowDrop);
+      if (unlisten) unlisten();
     };
   }, [setDraggingFiles]);
 
@@ -102,6 +125,7 @@ export function Composer({ variant, isGenerating, onSend, onStop }: ComposerProp
   const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
+    if (Date.now() - lastNativeDropRef.current < 250) return; // dedup Tauri natif
     dragCounterRef.current = 0;
     setIsDraggingOverComposer(false);
     setDraggingFiles(false);

@@ -1,31 +1,28 @@
 # Prompt OCR — extrait texte et tableaux d'un document
 # Modèle : GLM-OCR (8K, 0.9B), température 0.0
 # Protocole marqueurs fermés GLM-OCR — pas de prompt libre (ticket #19721)
-# Marqueur : Text Recognition: (défaut) ou Table Recognition: (si requête mentionne tableau/table)
-
-import re
+# Correctif Réponses.md n°6 : contrat stable *, task
 
 # Marqueurs officiels GLM-OCR (entraînement encoder-décodeur GLM-V+MTP)
 OCR_TEXT_MARKER = "Text Recognition:"
 OCR_TABLE_MARKER = "Table Recognition:"
+OCR_FORMULA_MARKER = "Formula Recognition:"
 
-_TABLE_KEYWORDS = (
-    "tableau", "table ", "table?", "tabuler", "grille", "csv",
-    "résumé structuré", "données structurées", "extrait.*table",
-)
+def resolve_ocr_task(query: str) -> str:
+    text = query.lower()
+    if any(word in text for word in ("tableau", "table", "colonnes")):
+        return "table"
+    if any(word in text for word in ("formule", "équation", "math")):
+        return "formula"
+    return "text"
 
-def _is_table_request(query: str) -> bool:
-    """Détection de tables dans la query utilisateur."""
-    lower = query.lower()
-    return any(kw in lower for kw in _TABLE_KEYWORDS)
-
-def build_system_ocr(query: str, *, request_table: bool = None) -> str:
-    """Construit le prompt OCR avec le marqueur GLM-OCR adéquat.
-    - request_table explicite > détection auto dans query > default Text
-    - La consigne de fidélite et de langue reste du côté du générateur (brief)
-    """
-    use_table = request_table if request_table is not None else _is_table_request(query)
-    marker = OCR_TABLE_MARKER if use_table else OCR_TEXT_MARKER
+def build_system_ocr(*, task: str) -> str:
+    if task == "table":
+        marker = OCR_TABLE_MARKER
+    elif task == "formula":
+        marker = OCR_FORMULA_MARKER
+    else:
+        marker = OCR_TEXT_MARKER
     return (
         f"Tu es GLM-OCR, un OCR technique déterministe.\n"
         f"{marker} Extrais le contenu de ce document.\n\n"
@@ -36,5 +33,5 @@ def build_system_ocr(query: str, *, request_table: bool = None) -> str:
         "- Conserve la langue du document (pas de traduction)\n"
     )
 
-# CONSTANT par défaut pour backward compat avec loop.py imports
-SYSTEM_OCR = build_system_ocr("")
+# Compat : SYSTEM_OCR utilisé si aucun contexte query
+SYSTEM_OCR = build_system_ocr(task="text")

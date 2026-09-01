@@ -102,7 +102,7 @@ def _strip_textual_tool_calls(content: str) -> str:
 from backend.prompts.orchestrator import SYSTEM_ORCHESTRATOR
 from backend.prompts.generator import SYSTEM_GENERATOR
 from backend.prompts.vision import SYSTEM_VISION
-from backend.prompts.ocr import SYSTEM_OCR, build_system_ocr
+from backend.prompts.ocr import SYSTEM_OCR, build_system_ocr, resolve_ocr_task
 from backend.utils.files import cleanup_request
 from backend.tools.registry import get_default_registry
 
@@ -151,6 +151,26 @@ def _format_tool_observation(tool: str, result: dict, attachment_name: str) -> s
     status = "success" if result.get("ok") else "failed"
     content = result.get("result", "")
     return f"<tool_observation>\ntool: {tool}\nstatus: {status}\nattachment: {attachment_name}\nresult:\n{content}\n</tool_observation>".strip()
+
+
+def asks_for_text_extraction(message: str) -> bool:
+    text = message.lower()
+    ocr_terms = ("ocr","extrais le texte","extraire le texte","lis le texte","lire le texte","transcris","transcrire","texte sur l'image","texte dans l'image","quel est le texte","que dit ce document","tableau","facture","scan")
+    return any(term in text for term in ocr_terms)
+
+def resolve_allowed_tools(message: str, image_paths: list[str] | None) -> list[str]:
+    has_pdf = any(Path(p).suffix.lower() == ".pdf" for p in (image_paths or []))
+    has_image = any(Path(p).suffix.lower() in (".png",".jpg",".jpeg",".webp") for p in (image_paths or []))
+    if has_pdf:
+        return ["doc_ocr"]
+    if has_image and asks_for_text_extraction(message):
+        return ["doc_ocr"]
+    if has_image:
+        return ["vision"]
+    return []
+
+def build_attachment_brief(message: str, result: dict) -> str:
+    return f"Analyse reussie pour : {message}\n\n{result.get('result','')[:4000]}"
 
 
 def _execute_vision(manager, tool_call: dict, image_paths: list[str] | None, request_id: str) -> dict:
@@ -235,9 +255,8 @@ def _execute_doc_ocr(manager, tool_call: dict, request_id: str) -> dict:
         args = tool_call.get("args") or tool_call.get("arguments") or {}
         pdf_path = args.get("pdf_path") or args.get("image_path", "")
         query = args.get("query", "")
-        # Détection de tables dans la requête pour marqueur GLM-OCR approprié
-        request_table = any(kw in query.lower() for kw in ("tableau", "table ", "table?", "tabuler", "grille", "csv"))
-        system_prompt = build_system_ocr(query, request_table)
+        ocr_task = resolve_ocr_task(query)
+        system_prompt = build_system_ocr(task=ocr_task)
         if not pdf_path or not Path(pdf_path).exists():
             return {"ok": False, "result": f"[Erreur doc_ocr: fichier introuvable {pdf_path}]", "latency_ms": int((time.perf_counter() - start) * 1000)}
         ext = Path(pdf_path).suffix.lower()
@@ -318,11 +337,19 @@ def run_agent_loop(
     assert isinstance(history, list), "history_shared doit être une liste"
 
     registry = get_default_registry()
-    # Chat = pas d'outils par défaut, Agent ou image jointe = 2 outils vision
-    if mode == "agent" or (image_paths and len(image_paths) > 0):
-        tool_defs = registry.definitions()  # vision + doc_ocr
+    # P0 — Politique outils deterministe (Resapes.md n6) : restreint selon fichier + intention
+    allowed_tools = resolve_allowed_tools(message, image_paths)
+    if allowed_tools:
+        all_defs = registry.definitions()
+        def _name(d): return d.get("function",{}).get("name") or d.get("name","")
+        tool_defs = [d for d in all_defs if _name(d) in allowed_tools]
     else:
         tool_defs = []
+    # Execution plan structuré (observabilité, non raw CoT)
+    attachment_kind = "pdf" if any(Path(p).suffix.lower()==".pdf" for p in (image_paths or [])) else "image" if image_paths else None
+    intent = "text_extraction" if asks_for_text_extraction(message) and attachment_kind else "visual_description" if attachment_kind=="image" else "document_analysis" if attachment_kind=="pdf" else "general"
+    selected = allowed_tools[0] if allowed_tools else None
+    emit("execution_plan", {"request_id": request_id, "attachment_kind": attachment_kind, "intent": intent, "selected_tool": selected, "selected_model": "LFM2.5-VL-3B" if selected=="vision" else "GLM-OCR" if selected=="doc_ocr" else None, "reason": f"Fichier {attachment_kind} + intention {intent}" if attachment_kind else "Aucun fichier"})
 
     tool_results: list[dict] = []
     brief: str = message  # fallback si pas de brief orchestré
@@ -331,14 +358,18 @@ def run_agent_loop(
     if image_paths:
         valid_cnt = sum(1 for p in image_paths if p and Path(p).exists())
         from backend.inference.ipc import log as _log
-        _log(f"[loop] image_paths={image_paths} valid={valid_cnt}/{len(image_paths)} mode={mode}")
+        _log(f"[loop] image_paths={image_paths} valid={valid_cnt}/{len(image_paths)} mode={mode} allowed={allowed_tools}")
         if valid_cnt == 0:
             emit("error", {"request_id": request_id, "code": "image_paths_invalid", "message": "Aucun fichier joint valide trouvé"})
     tool_observations: list[str] = []
+    skip_orchestrator = False
 
     try:
         # ========== P0 — Routage forcé pièce jointe → outil ==========
-        attachment_tool = select_attachment_tool(image_paths)
+        attachment_tool = allowed_tools[0] if allowed_tools else None
+        # fallback compat si allowed vide mais image_paths present (ancien select)
+        if not attachment_tool:
+            attachment_tool = select_attachment_tool(image_paths)
         if attachment_tool is not None:
             att_name = Path(image_paths[0]).name if image_paths and image_paths[0] else "fichier"
             emit("thinking", {"request_id": request_id, "phase": "tool_running", "text": "Analyse du document joint…" if attachment_tool == "doc_ocr" else "Analyse de l'image jointe…", "iteration": 0})
@@ -365,8 +396,15 @@ def run_agent_loop(
             # Si vision/OCR a échoué, on ne cache pas — le générateur expliquera l'échec
             if not forced_result["ok"]:
                 brief = f"L'outil {attachment_tool} a échoué sur {att_name}. Expliquer l'échec sans inventer."
+            else:
+                # P0 early exit : media simple reussi -> directement generateur (evite OCR parasite vision->ocr)
+                if len(allowed_tools) == 1:
+                    brief = build_attachment_brief(message, forced_result)
+                    skip_orchestrator = True
+                    log(f"[loop] early exit apres {attachment_tool} succes -> generateur direct")
 
         # ========== Phase 1 : Orchestrateur ==========
+        orchestrator_done = skip_orchestrator
         # Construit le message utilisateur avec hint fichiers si présents — chemins EXACTS pour éviter hallucination flat (conv.png)
         user_content = message
         if image_paths:
@@ -376,8 +414,9 @@ def run_agent_loop(
         messages_orch: list[dict] = [{"role": "system", "content": SYSTEM_ORCHESTRATOR}] + history
         messages_orch.append({"role": "user", "content": user_content})
 
-        orchestrator_done = False
-        for iteration in range(MAX_ITER):
+        if not skip_orchestrator:
+            orchestrator_done = False
+        for iteration in range(0 if skip_orchestrator else MAX_ITER):
             if time.perf_counter() - t0 > TOTAL_TIMEOUT:
                 emit("error", {"request_id": request_id, "code": "total_timeout", "message": "300s dépassé"})
                 break
