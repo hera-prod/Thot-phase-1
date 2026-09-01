@@ -236,4 +236,23 @@ models/Vision-document/GLM-OCR-f16.gguf 1.7G + mmproj Q8 484M
 
 > Validation : `npm run build` ✓ 242 modules (303kB) + `py_compile` ✓ + `pytest test_ocr_policy.py` 8 passed — attente `cargo tauri dev` pour test "Qu'est-ce qu'il y a d'écrit sur sa main ?" → `doc_ocr` sur `spike_bebop.png` via sémantique
 
+### ✅ Itération 01/09 — Réponses.md n°9 (VRAM leak manager)
+
+**Diagnostic** : `Impossible de charger LFM2.5-8B après 3 tentatives: [('config idéelle', ValueError)...` même erreur sur `flash_attn`/`sans mmproj` → cause hors config, VRAM occupée. Tour 1 `Coucou` OK (8B), Tour 2 `Décrit image` → VL-3B OK puis **rechargement 8B échoue** → `En attente`.
+
+**Cause** : `manager.py` faisait `del + gc + torch.cuda.empty_cache()` — `llama-cpp-python` alloue via `llama.cpp` C++ CUDA direct, **pas** PyTorch → `empty_cache()` ne libère rien. Référence résiduelle `chat_handler` gardait CLIP chargé, `gc` ne collectait pas, VRAM VL-3B (~2.5G) restait → 8B (~7G) OOM `ValueError: Failed to load model from file`.
+
+**Correctifs (`manager.py`)** :
+- `__init__` : `+ _current_chat_handler`, `_min_required_vram_mb=6000`
+- `_get_free_vram_mb()` : `nvidia-smi --query-gpu=memory.free` → `pynvml` → `backend.free_vram` fallback
+- `_wait_for_vram_release(timeout 3s)` : poll `free >= min` sinon `logger.warning`
+- `use_model` : `VRAM avant unload {name}: X Mo` / `après unload: Y Mo`, `_unload_current()` avant `_load_model`
+- `_unload_current()` : nullifie `self._current_model=None`, `handler=None`, `name=None` **avant** `del/close`, `if hasattr(model,"close"): model.close() else: del`, `del handler`, `gc.collect()`, `_wait_for_vram_release()`, `torch.empty_cache()` en dernier
+- `_build_llm_kwargs` : stocke `self._current_chat_handler` pour libération conjointe
+- `_load_model` : `LOAD_STRATEGIES = [nominal, apres_gc_force(0.5s), flash_off, sans_mmproj]` + `pre_delay gc+wait`, si OOM déjà vu → `estimate_layers` `n_gpu_layers réduit` en priorité (vrai fix mémoire vs config)
+
+**Test** : `backend/tests/test_manager_switch.py::test_switch_vl_then_text_model_succeeds` mock `Llama` + `close` → `unload` nullifie handler + `use_model` VL→8B OK
+
+> Validation : `py_compile manager.py` ✓, `get_free_vram_mb() = 4448 Mo`, `pytest test_manager_switch.py` passed (5.11s)
+
 ## Architecture système en cours

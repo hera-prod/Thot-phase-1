@@ -5,12 +5,14 @@ Notes.md § Gestion mémoire + § Double historique + § n_ctx adaptatif
 But : ne jamais avoir 2 modèles en VRAM en même temps (borne 7.5 GB garantie).
 - Un seul modèle résident à la fois (sauf LFM2.5-8B gardé chaud entre requêtes)
 - Chargement paresseux (lazy) pour GLM-OCR et VL-3B (uniquement sur tool_call)
-- Déchargement aggressif : del + gc.collect() + cuda.empty_cache()
+- Déchargement explicite : close + del handler + gc + wait VRAM (llama.cpp n'utilise pas torch)
 - Contexte adaptatif : 128K si ≥12GB VRAM, sinon 32K
 - Support multimodal : mmproj + chat_handler par modele
 """
 import gc
 import logging
+import time
+import subprocess
 from contextlib import contextmanager
 from typing import Optional, Generator
 
@@ -62,9 +64,41 @@ class ModelManager:
 
     def __init__(self):
         self._current_model: Optional[object] = None  # modele actuellement en VRAM
+        self._current_chat_handler: Optional[object] = None  # handler multimodal (CLIP) à libérer avec le modèle
         self._current_name: Optional[str] = None      # nom du modele charge
         self.detector = HardwareDetector()             # detecte le GPU au demarrage
         self.backend = self.detector.detect()          # config backend (cuda/vulkan/cpu...)
+        self._min_required_vram_mb = 6000  # seuil pour rechargement 8B (~7G) — ajustable
+
+    def _get_free_vram_mb(self) -> int:
+        """VRAM libre via nvidia-smi (fallback) — évite torch.cuda qui ne voit pas llama.cpp."""
+        try:
+            out = subprocess.check_output(["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"], text=True, timeout=1)
+            return int(out.strip().split("\n")[0])
+        except Exception:
+            pass
+        try:
+                import pynvml
+                pynvml.nvmlInit()
+                handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+                info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+                return int(info.free // (1024*1024))
+        except Exception:
+            pass
+        # Fallback : backend detector free_vram
+        try:
+            return int(self.backend.free_vram // (1024*1024))
+        except Exception:
+            return 0
+
+    def _wait_for_vram_release(self, timeout_s: float = 3.0) -> None:
+        start = time.monotonic()
+        while time.monotonic() - start < timeout_s:
+            free = self._get_free_vram_mb()
+            if free >= self._min_required_vram_mb:
+                return
+            time.sleep(0.1)
+        logger.warning("VRAM non libérée après déchargement (%s Mo libres, %s requis)", self._get_free_vram_mb(), self._min_required_vram_mb)
 
     @contextmanager
     def use_model(self, name: str, estimated_tokens: int = 4096, has_image: bool = False) -> Generator:
@@ -79,10 +113,13 @@ class ModelManager:
             return
 
         if self._current_model is not None:
+            logger.info("VRAM avant unload %s: %s Mo libres", self._current_name, self._get_free_vram_mb())
             self._unload_current()  # libere la VRAM avant de charger le suivant
+            logger.info("VRAM après unload: %s Mo libres", self._get_free_vram_mb())
 
         model = self._load_model(name, estimated_tokens, has_image)
         self._current_model = model
+        # handler déjà stocké via _build_llm_kwargs side-effect si vision
         self._current_name = name
         yield model
         # on garde le modele chaud pour la prochaine requete (pas de dechargement auto)
@@ -121,8 +158,10 @@ class ModelManager:
             # Mapping handler config -> classe réelle (0.3.34 n'a pas LFM2VL, fallback documenté)
             handler = self._build_vision_handler(cfg, cfg.mmproj if mmproj else None)
             kwargs["chat_handler"] = handler
+            self._current_chat_handler = handler
             logger.info(f"  chat_handler: {cfg.chat_handler} -> {handler.__class__.__name__}")
         else:
+            self._current_chat_handler = None
             if mmproj and cfg.mmproj:
                 kwargs["mmproj"] = cfg.mmproj
                 logger.info(f"  mmproj charge: {cfg.mmproj}")
@@ -130,9 +169,11 @@ class ModelManager:
                 try:
                     handler = self._build_vision_handler(cfg, cfg.mmproj)
                     kwargs["chat_handler"] = handler
+                    self._current_chat_handler = handler
                     logger.info(f"  chat_handler: {cfg.chat_handler}")
                 except Exception as e:
                     logger.warning(f"chat_handler {cfg.chat_handler} non charge: {e}")
+                    self._current_chat_handler = None
         return kwargs
 
     def _build_vision_handler(self, cfg, mmproj_path: str | None):
@@ -184,67 +225,80 @@ class ModelManager:
 
         errors: list[tuple[str, Exception]] = []
 
-        # Tentative 1 : config ideelle (flash_attn figure + mmproj/chat_handler)
-        try:
-            kwargs = self._build_llm_kwargs(cfg, n_ctx, cfg.flash_attn, mmproj=True)
-            llm = Llama(**kwargs)
-            logger.info(f"{name} charge avec succes (config ideelle)")
-            return llm
-        except Exception as e:
-            errors.append(("config ideelle", e))
-            logger.error(f"Tentative 1 echouee pour {name}: {e}")
+        # Stratégie retry distingue OOM vs config (Réponses.md n°9)
+        LOAD_STRATEGIES = [
+            ("nominal", {"flash": cfg.flash_attn, "mmproj": True, "delay": 0}),
+            ("apres_gc_force", {"flash": cfg.flash_attn, "mmproj": True, "delay": 0.5}),
+            ("flash_off", {"flash": False, "mmproj": True, "delay": 0}),
+            ("sans_mmproj", {"flash": False, "mmproj": False, "delay": 0}),
+        ]
 
-        # Tentative 2 (OOM) : partial GPU layers sans mmproj
-        if any("out of memory" in str(e).lower() or "CUDA" in str(e) for _, e in errors):
+        for strat_name, opts in LOAD_STRATEGIES:
+            if opts["delay"]:
+                gc.collect()
+                time.sleep(opts["delay"])
+                self._wait_for_vram_release(timeout_s=2.0)
+            # Si OOM déjà détecté, tente directement n_gpu_layers réduit
+            if any("out of memory" in str(e).lower() or "CUDA" in str(e) for _, e in errors):
+                try:
+                    partial = estimate_layers(self.backend.free_vram, 5 * GB, 1 * GB, 24)
+                    kwargs = self._build_llm_kwargs(cfg, n_ctx, False, mmproj=False, extra_layers=partial)
+                    llm = Llama(**kwargs)
+                    logger.info(f"{name} charge en fallback OOM ({strat_name}, partial={partial})")
+                    return llm
+                except Exception as e:
+                    errors.append((f"{strat_name}_oom_partial", e))
+                    logger.error(f"Tentative {strat_name} OOM échouée: {e}")
+                    continue
             try:
-                layer_count = 24  # approximation LFM2.5-8B
-                partial = estimate_layers(self.backend.free_vram, 5 * GB, 1 * GB, layer_count)
-                kwargs = self._build_llm_kwargs(cfg, n_ctx, False, mmproj=False, extra_layers=partial)
+                kwargs = self._build_llm_kwargs(cfg, n_ctx, opts["flash"], mmproj=opts["mmproj"])
                 llm = Llama(**kwargs)
-                logger.info(f"{name} charge en fallback OOM (partial layers={partial})")
+                logger.info(f"{name} charge avec succes ({strat_name})")
                 return llm
-            except Exception as e2:
-                errors.append(("fallback OOM", e2))
-                logger.error(f"Tentative 2 echouee pour {name}: {e2}")
-
-        # Tentative 3 : flash_attn desactive + mmproj/chat_handler gardes
-        try:
-            kwargs = self._build_llm_kwargs(cfg, n_ctx, False, mmproj=True)
-            llm = Llama(**kwargs)
-            logger.info(f"{name} charge avec flash_attn=False")
-            return llm
-        except Exception as e:
-            errors.append(("flash_attn=False", e))
-            logger.error(f"Tentative 3 echouee pour {name}: {e}")
-
-        # Tentative 4 : sans mmproj/chat_handler (si handler provoque l'echec)
-        try:
-            kwargs = self._build_llm_kwargs(cfg, n_ctx, False, mmproj=False)
-            llm = Llama(**kwargs)
-            logger.warning(f"{name} charge sans mmproj/chat_handler (images seront ignorees!)")
-            return llm
-        except Exception as e:
-            errors.append(("sans mmproj", e))
-            logger.error(f"Tentative 4 echouee pour {name}: {e}")
+            except Exception as e:
+                errors.append((strat_name, e))
+                logger.error(f"Tentative {strat_name} echouee pour {name}: {e}")
+                # Si erreur n'est pas OOM, continue vers flash_off etc.
+                continue
 
         raise RuntimeError(f"Impossible de charger {name} apres {len(errors)} tentatives: {errors}") from errors[-1][1]
 
     def _unload_current(self):
-        """Decharge le modele actuel et libere la VRAM/RAM."""
-        if self._current_model is not None:
+        """Decharge le modele actuel et libere la VRAM/RAM — ferme handler multimodal explicitement."""
+        if self._current_model is None and self._current_chat_handler is None:
+            return
+        model = self._current_model
+        handler = self._current_chat_handler
+        # Nullifie d'abord pour éviter référence résiduelle dans le manager
+        self._current_model = None
+        self._current_chat_handler = None
+        self._current_name = None
+        if model is not None:
             try:
-                del self._current_model  # supprime la reference Python
+                if hasattr(model, "close"):
+                    model.close()
+                else:
+                    del model
+            except Exception as e:
+                logger.warning(f"close model échoué: {e}")
+                try:
+                    del model
+                except Exception:
+                    pass
+        if handler is not None:
+            try:
+                del handler
             except Exception:
                 pass
-            self._current_model = None
-            self._current_name = None
-            gc.collect()  # force le ramasse-miettes a liberer la RAM
-            try:
-                import torch
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()  # vide le cache CUDA (VRAM)
-            except ImportError:
-                pass  # torch non installe, on ignore
+        gc.collect()
+        self._wait_for_vram_release(timeout_s=3.0)
+        # torch vide uniquement si dispo — ne libère pas llama.cpp mais harmless
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except ImportError:
+            pass
 
     def unload_all(self):
         """Decharge tout (appele a la fermeture de l'app)."""
