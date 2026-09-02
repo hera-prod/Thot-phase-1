@@ -1,6 +1,8 @@
 // Thot Phase 1 — Backend Rust Tauri (IPC + Sidecar Python)
 // But : lancer le sidecar Python au démarrage et relayer les JSON Lines vers le frontend
 
+use std::fs;
+use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::{Emitter, Manager};
 use tauri_plugin_shell::ShellExt;
@@ -8,6 +10,15 @@ use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use serde_json::Value;
 
 struct SidecarHandle(Mutex<Option<CommandChild>>);
+
+fn resolve_db_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| format!("Impossible de résoudre app_data_dir: {}", e))?;
+    let data_dir = app_data_dir.join("data");
+    fs::create_dir_all(&data_dir).map_err(|e| format!("Impossible de créer data dir: {}", e))?;
+    let db_path = data_dir.join("thot-phase-1.db");
+    println!("[rust] Thot DB path resolved: {}", db_path.display());
+    Ok(db_path)
+}
 
 // Commande : le frontend appelle invoke("chat_send", {request_id, message, mode, image_paths, conv_id})
 #[tauri::command]
@@ -88,9 +99,9 @@ async fn save_upload(app: tauri::AppHandle, request_id: String, filename: String
 }
 
 #[tauri::command]
-fn list_conversations(limit: Option<i64>, offset: Option<i64>) -> Result<Vec<Value>, String> {
-    let db_path = "/home/hera/Musique/Thot v0.8/Thot-phase-1/data/thot-phase-1.db";
-    if !std::path::Path::new(db_path).exists() {
+fn list_conversations(app: tauri::AppHandle, limit: Option<i64>, offset: Option<i64>) -> Result<Vec<Value>, String> {
+    let db_path = resolve_db_path(&app).map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|_| "/home/hera/Musique/Thot v0.8/Thot-phase-1/data/thot-phase-1.db".to_string());
+    if !std::path::Path::new(&db_path).exists() {
         return Ok(vec![]);
     }
     // Utilise python3 pour requêter SQLite sans dépendance rusqlite
@@ -141,9 +152,9 @@ except Exception as e:
 }
 
 #[tauri::command]
-fn get_conversation(conversation_id: String) -> Result<Option<Value>, String> {
-    let db_path = "/home/hera/Musique/Thot v0.8/Thot-phase-1/data/thot-phase-1.db";
-    if !std::path::Path::new(db_path).exists() {
+fn get_conversation(app: tauri::AppHandle, conversation_id: String) -> Result<Option<Value>, String> {
+    let db_path = resolve_db_path(&app).map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|_| "/home/hera/Musique/Thot v0.8/Thot-phase-1/data/thot-phase-1.db".to_string());
+    if !std::path::Path::new(&db_path).exists() {
         return Ok(None);
     }
     let py_code = format!(
@@ -180,9 +191,9 @@ except Exception as e:
 }
 
 #[tauri::command]
-fn list_messages(conversation_id: String) -> Result<Vec<Value>, String> {
-    let db_path = "/home/hera/Musique/Thot v0.8/Thot-phase-1/data/thot-phase-1.db";
-    if !std::path::Path::new(db_path).exists() {
+fn list_messages(app: tauri::AppHandle, conversation_id: String) -> Result<Vec<Value>, String> {
+    let db_path = resolve_db_path(&app).map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|_| "/home/hera/Musique/Thot v0.8/Thot-phase-1/data/thot-phase-1.db".to_string());
+    if !std::path::Path::new(&db_path).exists() {
         return Ok(vec![]);
     }
     let py_code = format!(
@@ -221,18 +232,27 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
+            let db_path = resolve_db_path(app.handle()).expect("resolve_db_path failed");
+            let app_data_dir = app.path().app_data_dir().expect("app_data_dir failed");
+            println!("[rust] Thot DB path resolved: {}", db_path.display());
             let (mut rx, child) = if cfg!(debug_assertions) {
                 app.shell()
                     .command("python3")
                     .args(["-m", "backend.main"])
                     .current_dir("/home/hera/Musique/Thot v0.8/Thot-phase-1")
+                    .env("THOT_DB_PATH", db_path.to_string_lossy().to_string())
+                    .env("THOT_APP_DATA_DIR", app_data_dir.to_string_lossy().to_string())
                     .spawn()
                     .expect("échec lancement python3 -m backend.main (vérifie pip install -r requirements.txt)")
             } else {
                 let sidecar = app.shell()
                     .sidecar("thot-sidecar")
                     .expect("sidecar thot-sidecar introuvable dans src-tauri/binaries/");
-                sidecar.spawn().expect("échec lancement sidecar Python")
+                sidecar
+                    .env("THOT_DB_PATH", db_path.to_string_lossy().to_string())
+                    .env("THOT_APP_DATA_DIR", app_data_dir.to_string_lossy().to_string())
+                    .spawn()
+                    .expect("échec lancement sidecar Python")
             };
 
             app.manage(SidecarHandle(Mutex::new(Some(child))));

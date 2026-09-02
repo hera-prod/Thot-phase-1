@@ -269,4 +269,22 @@ models/Vision-document/GLM-OCR-f16.gguf 1.7G + mmproj Q8 484M
 
 > Validation : `py_compile loop/get_source/read_text/registry/orchestrator` ✓, `npm run build` ✓ 242 modules (303kB) — test attendu : "Qu'en penses-tu ?" + image → `vision(src_pending)` puis "tatouage sur sa peau" → `get_source(src_001) → vision`
 
+### ✅ Itération 01/09 — Réponses.md n°11 (persistance DB unique) — adapté
+
+**Diagnostic** : Historique vide après image analysée, `Fichier détecté : aucun` au tour suivant — capture prouve conversation `1e54db31` visible en session mais absente de Historique. `~/.local/share/thot/media` existe mais `Fichier détecté : aucun` → registre lit DB différente de celle où `Source` écrite.
+
+**Hypothèse confirmée** : 2 DB divergentes — Rust `list_conversations` lisait `/home/hera/Musique/Thot v0.8/Thot-phase-1/data/thot-phase-1.db` hardcodé, Python sidecar écrivait `THOT_DB_PATH` ou `~/.local/share/thot/data/thot-phase-1.db`/`Thot-phase-1/data` selon env — adapt. réel : chemins avec espaces + `app_data_dir` Tauri (`~/.local/share/com.thot.phase1` en prod) vs `Path.home()`.
+
+**Correctifs (`src-tauri/src/lib.rs`)** :
+- `resolve_db_path(app: &AppHandle) -> PathBuf` : `app.path().app_data_dir()/data/thot-phase-1.db`, `create_dir_all`, `println!("[rust] Thot DB path resolved: {}", display)` — **source vérité unique**
+- `list_conversations/get_conversation/list_messages` : `fn(..., app: AppHandle, ...)` → `resolve_db_path(&app)` avec fallback hardcodé pour CLI, `Path::new(&db_path).exists()`
+- `setup` spawn sidecar : `let db_path = resolve_db_path(handle)`, `println!`, `Command::new(...).env("THOT_DB_PATH", db_path).env("THOT_APP_DATA_DIR", app_data_dir)` pour `python3 -m backend.main` (debug) et `sidecar("thot-sidecar")` (release)
+
+**Python (`backend/db/database.py` + `main.py` + `media_cache.py`)** :
+- `database.py` déjà `THOT_DB_PATH` env prioritaire (`Path(env).expanduser().resolve()`), fallback `home/.local/share/thot/data/thot-phase-1.db` — log `log.info("Thot DB path: %s", get_db_path())`
+- `main.py` : `persist_user_turn` avant LLM — `ensure_conversation(convId)` → `create user Message` → `promote_attachment_to_media_cache(/tmp→media/{sha256}.ext)` → `Source(conversation_id, message_id, sha256, relative_path)` → `session.commit()` **avant** `run_agent_loop` (survit même si Vision crash) — `append assistant` + `ToolCall` commit après génération
+- `Source` déjà enrichie n°10 avec `conversation_id` index, `media_cache.py` déjà `~/.local/share/thot/media` (adapt. réel : `Path.home()/".local/share/thot/media"` vs `THOT_APP_DATA_DIR/media` — cohérent via `get_media_root()`)
+
+**Validation** : `cargo check` ✓, `py_compile main/models/media_cache` ✓, `THOT_DB_PATH` même valeur Rust/Python dans logs (`println!` + `log.info`), `sqlite3 ~/.local/share/.../thot-phase-1.db` doit montrer `conversations/messages/sources` après image
+
 ## Architecture système en cours
