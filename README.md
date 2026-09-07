@@ -1,50 +1,19 @@
 # Thot
 
-Assistant conversationnel **local** (< 8 Go de VRAM), multiplateforme, construit par incréments en cinq phases.
+Projet d’assistant conversationnel local, développé en cinq phases, avec un profil cible sous 8 Go de VRAM. La finalité inclut des distributions adaptées à Windows, Linux et macOS et un mode portable par dossier, notamment sur clé USB ; ces objectifs restent à qualifier sur les paquets réels.
 
-- **Motif agentique** : un modèle (LFM 2.5 8B), deux rôles — orchestrateur (planification + outils) et générateur (rédaction).
-- **Contrainte matérielle** : un seul modèle résident en VRAM à la fois (swap séquentiel).
-- **Stack** : Tauri 2 + React/Vite, sidecar Python `llama-cpp-python` (GGUF), SQLite/SQLAlchemy, IPC JSON Lines (stdin/stdout).
+## Point d’entrée
 
-## Documentation
+La [documentation centrale](documentation/README.md) décrit la préproduction : contrats, cinq phases, annexes sourcées, pseudo-code, portabilité et tests. Commencer par les [contrats transversaux](documentation/contrats_transversaux.md) avant de transformer les schémas en code.
 
-Toute la spécification, les annexes (références scientifiques, guides Python) et le pseudo-code annoté se trouvent dans le dossier [`documentation/`](documentation/README.md).
+- **[Audit de préproduction](documentation/audit_preproduction.md)** : corrections et écarts identifiés, sans modification du code applicatif.
+- **[Portabilité](documentation/portabilite.md)** : exigences de dossier autonome, dépendances hôtes et essais par cible.
+- **[Annexes](documentation/annexes/README.md)** : recherche et ressources officielles avec limites d’application.
+- **[Pseudo-code](documentation/pseudocode/README.md)** : flux non exécutables, annotés par phase.
+- **[Tests et qualification](documentation/tests_acceptation.md)** : scénarios attendus, non déclarés réussis sans preuve.
 
-- [Index central](documentation/README.md)
-- [Sommaire des annexes](documentation/annexes/README.md)
-- [Sommaire du pseudo-code](documentation/pseudocode/README.md)
+## État du dépôt
 
-## Structure du dépôt
+`backend/`, `frontend/` et `src-tauri/` contiennent un prototype Python, React/Vite et Tauri. La documentation décrit une cible plus rigoureuse, pas une certification de l’implémentation présente.
 
-```
-backend/        # sidecar Python (phase 1) — llama-cpp-python, agent loop, outils, SQLite
-frontend/       # React + Vite + Tauri 2 — pages, composants
-src-tauri/      # coquille Rust (sidecar manager)
-documentation/  # spec des 5 phases + annexes + pseudo-code
-```
-
-## Lancer en développement
-
-```bash
-# 1. Dépendances (Ubuntu 24.04 — PEP 668)
-pip install --break-system-packages -r requirements.txt
-
-# 2. Modèles (GGUF) attendus dans models/LLM, models/Vision-general, models/Vision-document
-
-# 3. Test du sidecar (JSON Lines)
-echo '{"id":"test","method":"chat.send","params":{"message":"Bonjour","mode":"chat"}}' | python3 -m backend.main
-
-# 4. Frontend + Tauri
-npm install
-npm --prefix frontend install
-npm run tauri dev
-```
-
-## Build
-
-```bash
-pyinstaller --onefile --name thot-sidecar-x86_64-unknown-linux-gnu --collect-all backend backend/main.py --distpath src-tauri/binaries --clean --noconfirm
-npm run tauri build
-```
-
-> Voir [`documentation/README.md`](documentation/README.md) pour la vision produit complète et le découpage en phases.
+Aucune nouvelle fonctionnalité applicative ni correction de runtime n’est incluse dans cette révision documentaire. Les versions, commandes de build et prérequis seront figés dans un guide d’exécution après qualification ; l’ancien conseil d’installer les dépendances dans le Python système n’est plus présenté comme parcours utilisateur.

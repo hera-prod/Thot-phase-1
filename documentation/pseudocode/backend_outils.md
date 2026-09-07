@@ -1,116 +1,186 @@
-# Pseudo-code — Outils
+# Pseudo-code — Registre, lecture et vision
 
-> Phase 1. Ce fichier couvre le **registre d'outils**, la **classe de base** et les **outils de vision / lecture**.
+Cible conceptuelle non exécutée et non testée. Le registre et l’exécuteur appliquent les [contrats C02–C05, C07, C09–C13 et C18](../contrats_transversaux.md), y compris les droits dès la phase 1.
 
----
+## Responsabilités et interfaces
 
-## 1. Registre
+- **QUI APPELLE** : l’orchestrateur propose un appel ; la boucle le confie à l’exécuteur déterministe ; les services locaux peuvent réutiliser les mêmes opérations de lecture autorisée.
+- **POURQUOI** : borner une demande LLM avant d’ouvrir une ressource et transformer toute observation en résultat localisable.
+- **NE PAS CONFONDRE** : catalogue et preuve, extraction textuelle et OCR, vision généraliste et génération d’image, `read_text` et lecture vocale.
+- **Entrées** : nom d’outil actif, paramètres structurés, `artifact_id`, sélecteurs bornés, question, portée et budget de run. Aucun chemin proposé par le LLM.
+- **Sorties** : résultat corrélé à `tool_call_id`, succès ou erreur, aperçus bornés, `evidence_id`, `artifact_id` éventuels, localisation, transformations et limites.
+- **Phases** : [Phase 1] `get_source`, `read_text`, `vision`, `doc_ocr` ; [Phase 2] `generate_image` ; [Phase 3] `generate_file` ; [Phase 4] recherche autorisée ; [Phase 5] périmètre enrichi, sans nouvel accès global implicite.
 
-```python
+## Registre et validation commune
+
+```text
 [Phase 1]
-# tools/registry.py — enregistre les outils disponibles pour l'orchestrateur.
-# NOTE : en phase 1, 4 outils seulement. Pas de système de permissions (viendra phase 2+).
-class ToolRegistry:
-    def register(self, tool): ...      # ⚠️ refuse un doublon de nom
-    def get(self, name): ...           # lève KeyError si inconnu
-    def definitions(self): ...         # liste au format "function calling" pour le LLM
+CONTRAT C02, C04, C09, C10, C18
+QUI APPELLE : démarrage du backend, puis chaque proposition d’outil.
+POURQUOI : l’absence d’un bouton UI n’est pas une permission backend.
 
-def get_default_registry():
-    r = ToolRegistry()
-    r.register_many([VisionGeneralTool(), VisionOCRTool(), GetSourceTool(), ReadTextTool()])
-    return r
+AU DÉMARRAGE
+    Enregistrer pour chaque outil un nom unique, une version de schéma,
+    la phase d’activation, les capacités, les limites et le service responsable.
+    Refuser les collisions de noms et les définitions incompatibles.
+    N’exposer à l’orchestrateur que les outils actifs et autorisés pour le run.
+    Ne pas exposer micro, TTS, suppression, shell ou accès SQL comme outils.
+
+POUR CHAQUE PROPOSITION
+    Vérifier nom, phase, version, types et champs inconnus.
+    Vérifier bornes de tailles, pages, plages, question et coût prévu.
+    Vérifier systématiquement l’acteur et la portée de lecture ou de production.
+    POUR CHAQUE référence présente OU exigée par le schéma de cet outil
+        Exiger la référence obligatoire si elle manque, sans en fabriquer une.
+        Résoudre artifact_id ou evidence_id dans les droits du run courant.
+        Pour une référence de fichier, vérifier ArtifactLink, disponibilité,
+        MIME réel, état du Blob et chemin canonique sous la racine autorisée.
+        Contrôler liens symboliques et jonctions, pas un préfixe texte.
+    Un catalogue sans référence et une génération sans entrée n’exigent pas
+    d’artifact_id artificiel ; leurs portées restent toujours vérifiées.
+    SI ambiguïté de référence, droits insuffisants ou ressource absente
+        Refuser avec motif borné ; ne pas tenter un autre fichier en silence.
+    SI un hash est fourni à la place d’une autorisation
+        Refuser ; ne pas révéler l’existence d’une ressource hors périmètre.
+    SI schéma ou budget invalide
+        Retourner un refus de proposition, sans effet disque, réseau ou modèle.
+    SINON accepter l’appel et lui attribuer tool_call_id / logical_action_id.
 ```
 
----
+## Flux principal d’exécution
 
-## 2. Classe de base
+```text
+[Phase 1] [Phase 2] [Phase 3] [Phase 4] [Phase 5]
+CONTRAT C04, C05, C07, C09, C11
+QUI APPELLE : boucle, après validation ; aucun worker n’écrit sur stdout.
 
-```python
-[Phase 1]
-# tools/base.py — contrat commun à tous les outils.
-class BaseTool:
-    name: str                 # identifiant unique ("vision", "doc_ocr", ...)
-    description: str          # description injectée au LLM pour choisir l'outil
-    def definition(self) -> dict:   # schéma des arguments (au format OpenAI function)
-    def execute(self, args: dict) -> dict:   # renvoie {"ok": bool, "result": str}
-    # ⚠️ "execute" doit TOUJOURS retourner un dict, jamais écrire sur stdout.
+POUR UN APPEL ACCEPTÉ
+    Persister la requête structurée puis émettre tool.started.
+    Vérifier la clé idempotente et les effets déjà enregistrés.
+    SI un résultat final existe, revalider ses droits puis le réutiliser sans répéter l’action.
+    SINON
+        Vérifier annulation, budget restant et droits immédiatement avant accès.
+        Réutiliser l’admission et les budgets du run parent ; aucun nouveau slot lourd.
+        Confier l’opération au service approprié.
+        Pour une inférence, demander sa propre location via le socle.
+        Ne jamais recevoir un handle LLM détenu par l’orchestrateur.
+        Persister les gros corps comme extraction ou artefact interne.
+        Produire des preuves avec extrait, source, localisation et version.
+        Publier les fichiers selon la procédure de stockage, hors transaction longue.
+    À LA FIN OU À L’ERREUR
+        Attendre la fin native réelle si un worker est engagé.
+        Enregistrer un seul résultat final corrélé, même si l’outil échoue.
+        Retourner statut, aperçu, evidence_ids, artifact_ids et limites.
+        Ne pas transporter le document entier dans tool.completed.
+        La boucle ajoute requête et résultat avant toute nouvelle décision.
 ```
 
----
+## Catalogue et sélection sans deviner
 
-## 3. Routage des pièces jointes
-
-```python
+```text
 [Phase 1]
-# NOTE : routage DÉTERMINISTE avant de laisser le LLM choisir.
-# Un PDF ➜ doc_ocr ; une image ➜ vision ; une demande "lis le texte" ➜ doc_ocr.
-def select_attachment_tool(image_paths):
-    if any(p.endswith(".pdf") for p in image_paths): return "doc_ocr"
-    return "vision"
+CONTRAT C10, C12
+QUI APPELLE : get_source ou préparation du catalogue compact.
+
+LISTER LES RESSOURCES
+    Filtrer d’abord les liens accessibles et la disponibilité.
+    Présenter ID, nom, type détecté, provenance et ordre de dépôt.
+    Conserver un ordre stable ; rendre la suite par pagination bornée.
+    Ne pas charger les octets pour fabriquer une liste.
+    Ne pas prétendre qu’une ressource répond à la question depuis son nom.
+
+SI « cette image » désigne plusieurs artefacts non distingués
+    Retourner un besoin de clarification avec candidats autorisés.
+    Ne pas choisir le dernier dépôt arbitrairement.
+
+[Phase 4]
+    Ajouter les fiches sémantiques versionnées et leur qualité d’extraction.
+    Les fiches aident au routage, jamais à certifier un fait non lu.
+[Phase 5]
+    Ajouter seulement les ressources explicitement partagées de l’espace courant.
 ```
 
----
+## Lecture texte et PDF avant OCR
 
-## 4. Outil de vision générale
-
-```python
+```text
 [Phase 1]
-class VisionGeneralTool(BaseTool):
-    name = "vision"
-    # NOTE : utilise LFM2.5-VL-3B (chargé paresseusement via ModelManager).
-    def execute(self, args):
-        img = resolve_and_validate(args["image_path"])   # ⚠️ valider le chemin (le LLM peut l'halluciner)
-        prepared = preprocess_image(img)                  # EXIF + max 1536px + JPEG 88 (réduit VRAM)
-        with manager.use_model("LFM2.5-VL-3B") as vlm:    # ➜ décharge le LLM, charge le VL
-            out = vlm.create_chat_completion(...)         # image envoyée en data URL
-            return {"ok": True, "result": out}
+CONTRAT C05, C07, C10, C12, C18
+QUI APPELLE : read_text ou service d’extraction choisi depuis une demande bornée.
+POURQUOI : ne pas transformer tout PDF textuel en lot d’images coûteux.
+
+POUR UNE RESSOURCE TEXTE OU MARKDOWN
+    Lire la copie gérée selon plage bornée ; vérifier encodage et taille.
+    Conserver offsets ou numéros de lignes et version de l’extracteur.
+    Retourner extrait, preuve et sélecteur de continuation si nécessaire.
+    SI encodage non exploitable, annoncer l’échec sans inventer du texte.
+
+POUR UN PDF
+    Ouvrir ses métadonnées et vérifier nombre de pages et sélecteur demandé.
+    SI fichier chiffré, corrompu ou plage invalide
+        Retourner une erreur actionnable sans rendre tout le document.
+    Extraire d’abord le texte exploitable des seules pages nécessaires.
+    Évaluer couverture et qualité d’extraction, pas seulement présence de caractères.
+    SI le texte suffit à la question
+        Retourner preuves avec numéros de page, sans charger un modèle OCR.
+    SINON
+        Choisir les pages manquantes ou les régions utiles.
+        Un besoin de tableau ou de mise en page peut justifier un rendu
+        même lorsqu’une couche textuelle existe.
+        Préparer un lot de pages dans les bornes pixels, mémoire et durée.
+        Rendre seulement ce lot, avec paramètres du profil mesuré.
+        Exécuter doc_ocr ou vision selon l’objectif.
+        Libérer les rendus et buffers du lot avant de préparer le suivant.
+        Vérifier annulation et budget entre les lots.
+    Conserver ordre des pages, rotations, recadrages et autres transformations.
+    SI budget atteint avant la fin
+        Retourner un résultat partiel et les pages non traitées.
+        Ne pas conclure que ces pages sont vides.
 ```
 
----
+## Vision et OCR sous location contrôlée
 
-## 5. Outil OCR de document
-
-```python
+```text
 [Phase 1]
-class VisionOCRTool(BaseTool):
-    name = "doc_ocr"
-    # NOTE : utilise GLM-OCR pour lire texte, tableaux, PDF, factures.
-    def execute(self, args):
-        path = args["pdf_path"]
-        # traitement page par page (PyMuPDF, 200 DPI) pour éviter l'explosion du KV.
-        pages = render_pages(path)
-        with manager.use_model("GLM-OCR") as ocr:
-            text = "".join(ocr_page(page) for page in pages)
-            return {"ok": True, "result": text}
+CONTRAT C04, C07, C12
+QUI APPELLE : vision pour compréhension d’image, doc_ocr pour lecture visuelle.
+NE PAS CONFONDRE : format bien formé et observation fiable.
+
+POUR UNE IMAGE OU UN LOT DE PAGES AUTORISÉ
+    Vérifier image décodable, dimensions, orientation et budget de pixels.
+    Prétraiter la copie, sans modifier l’original géré ni externe.
+    Tracer réduction, rotation ou recadrage ; ne pas imposer un réglage universel.
+    Acquérir la location de famille vision/OCR sans location texte active.
+    Vérifier modèle, projecteur et adaptateur d’architecture compatibles.
+    SI un composant manque, refuser avec erreur spécifique ; pas de substitution.
+    Préparer l’entrée multimodale dans l’adaptateur natif, hors IPC de contrôle.
+    Poser la question bornée et recevoir l’observation.
+    Signaler incertitude, texte illisible et erreurs possibles d’OCR.
+    Enregistrer les preuves localisées et la provenance du traitement.
+    Confirmer fin native puis libérer la location.
+    Ne pas renvoyer le handle au demandeur.
+    La boucle réacquiert le runtime texte avant de continuer.
 ```
 
----
+## Erreurs et arrêts attendus
 
-## 6. Outils de consultation des sources
+- [Phase 1] Outil inconnu, phase désactivée ou arguments hors schéma : aucun effet ; refus borné pris en compte dans le budget de décision. [C02, C04, C18](../contrats_transversaux.md)
+- [Phase 1] Ressource inaccessible, ambiguë, absente, chiffrée ou corrompue : erreur distincte et possibilité de préciser/importer une autre ressource, jamais lecture hors portée. [C10, C12](../contrats_transversaux.md)
+- [Phase 1] Annulation ou dépassement de budget : résultats déjà acquis conservés, arrêt coopératif puis worker isolé si nécessaire ; aucun faux timeout par thread. [C04, C07, C09](../contrats_transversaux.md)
+- [Phase 4] Une fiche vide ou une extraction ratée ne prouve pas l’absence de réponse ; proposer ouverture ciblée ou autre stratégie locale dans les budgets. [C12, C15](../contrats_transversaux.md)
 
-```python
-[Phase 1]
-class GetSourceTool(BaseTool):
-    name = "get_source"
-    # NOTE : liste les fichiers déposés dans la conversation (manifest), sans les ouvrir.
-    # ➜ permet au LLM de savoir ce qui est disponible avant de lire.
+## Tests d’acceptation à rattacher
 
-class ReadTextTool(BaseTool):
-    name = "read_text"
-    # NOTE : lit un fichier TEXTE (markdown, txt) — ⚠️ différent de doc_ocr qui "voit" le document.
-```
+Scénarios associés à **T-C05, T-C06, T-C08, T-C12, T-F01 à T-F06, T-W05 et T-M01** dans la [matrice de tests](../tests_acceptation.md), à exécuter.
 
----
+- [Phase 1] `artifact_id` d’une autre conversation et hash connu sans lien : même refus sans fuite d’existence.
+- [Phase 1] Chemin relatif malveillant, lien symbolique sortant, MIME trompeur et image trop grande : aucun accès hors racine.
+- [Phase 1] PDF textuel : texte extrait avant tout OCR ; PDF mixte : seules les pages nécessaires sont rendues.
+- [Phase 1] PDF volumineux : mémoire bornée par lot, arrêt entre pages et résultat partiel localisable.
+- [Phase 1] Deux images ambiguës : clarification ; fichier absent : erreur, pas sélection de secours.
+- [Phase 1] Projecteur absent, échec natif et annulation : un résultat corrélé par appel accepté, ressources nettoyées avant reprise texte.
+- [Phase 4] Catalogue sémantique non encore produit : catalogue minimal utilisable sans affirmation infondée.
+- [Phase 1] Catalogue sans artifact_id et [Phase 2] génération sans référence : validation de portée maintenue sans identifiant d’entrée artificiel ; couverture de production à vérifier avec **T-I02**.
 
-## Points de vigilance
+## Navigation
 
-- **`vision` (généraliste) ≠ `doc_ocr` (texte)** : deux modèles différents.
-- **`read_text` (extraire du texte) ≠ TTS (lire à voix haute)** : le TTS arrive en phase 3.
-- **Valider les chemins** : le modèle peut inventer un `image_path` ; ne l'utiliser que s'il correspond à un fichier réellement fourni.
-
----
-
-## Correspondance
-
-- [Document — Phase 1](../phase_1_socle_et_vision.md)
-- Avant : [backend_agent_loop.md](backend_agent_loop.md) · Après : [backend_db.md](backend_db.md)
+[Sommaire](README.md) · [Boucle](backend_agent_loop.md) · [Socle](backend_socle.md) · [Stockage](backend_db.md) · [Recherche](backend_recherche.md) · [Phase 1](../phase_1_socle_et_vision.md). Appui technique : [annexe LFM et architecture](../annexes/01_lfm_et_architecture.md).

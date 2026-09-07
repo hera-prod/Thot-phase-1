@@ -1,43 +1,49 @@
-# Annexe 02 — Quantification et GGUF
+# Annexe 02 — GGUF, quantification et pile multimodale
 
-Cette fiche décrit le format **GGUF** et la **quantification**, mécanismes qui permettent de faire tenir des modèles de plusieurs milliards de paramètres dans 8 Go de VRAM.
+Sources récupérées le **2026-09-06**. Conventions **Fait / Décision Thot / À mesurer** : voir le [sommaire des annexes](README.md).
 
----
+## Tailles réelles des GGUF de LFM2.5-8B-A1B
 
-## 1. Pourquoi quantifier ?
+**Fait.** Tailles de fichiers publiées par l'API du dépôt ([API Hugging Face, blobs](https://huggingface.co/api/models/LiquidAI/LFM2.5-8B-A1B-GGUF?blobs=true)) :
 
-Un modèle en précision 16 bits (2 octets/paramètre) coûte ~2 Go par milliard de paramètres. Un 8B ≈ 16 Go : intenable en 8 Go. La quantification réduit le nombre de bits par poids :
+| Quantification | Taille (octets) | Ordre de grandeur |
+| :--- | ---: | :--- |
+| Q4_0 | 4 844 678 368 | ≈ 4,84 Go |
+| Q4_K_M | 5 155 564 768 | ≈ 5,16 Go |
+| Q5_K_M | 6 030 339 296 | ≈ 6,03 Go |
+| Q6_K | 6 959 787 232 | ≈ 6,96 Go |
+| Q8_0 | 9 010 195 680 | ≈ 9,01 Go |
+| F16 / BF16 | 16 947 260 640 | ≈ 16,95 Go |
 
-| Précision | Bits/poids | 8B ≈ | Qualité relative |
-| :--- | :--- | :--- | :--- |
-| FP16 | 16 | ~16 Go | référence |
-| Q8_0 | 8 | ~8 Go | quasi identique |
-| Q4_K_M | ~4.5 (mixte) | ~5 Go | bon compromis |
-| Q2_K | ~2.6 | ~3 Go | dégradation notable |
+**À mesurer.** Ce sont des tailles **sur disque**. L'empreinte à l'exécution ajoute contexte, buffers de calcul et état d'attention : aucune source récupérée ne publie ces valeurs (`n.a.`). Deux conséquences directes : le profil « moins de 8 Go » ne se déduit pas de la taille du fichier, et une quantification tenant sur disque ne tient pas nécessairement en mémoire.
 
-> Le **Q4_K_M** est le compromis usuel pour un 8B sur GPU 8 Go (bonne qualité, empreinte réduite).
+## Types de quantification disponibles
 
-## 2. Le format GGUF
+**Fait.** L'outil de quantification de llama.cpp expose notamment les types **Q2_K à Q6_K**, **Q8_0**, la série **IQ1_S à IQ4_NL**, ainsi que F16/BF16/F32, et permet de fixer séparément le type des tenseurs de sortie et d'embeddings, voire tenseur par tenseur ; l'option de désactivation des mélanges « k-quant » existe également ([llama.cpp — tools/quantize/README.md](https://github.com/ggml-org/llama.cpp/blob/master/tools/quantize/README.md)).
 
-GGUF est le format de fichiers unique utilisé par `llama.cpp` : il emballe les poids quantifiés **et** les métadonnées (architecture, vocabulaire, config) dans un seul fichier. C'est ce qui rend le chargement simple et portable.
+**Fait.** La même page indique que la quantification réduit la précision des poids, **diminue la taille du modèle** et **peut accélérer l'inférence**, les méthodes différant en taille disque et en vitesse ([llama.cpp — tools/quantize/README.md](https://github.com/ggml-org/llama.cpp/blob/master/tools/quantize/README.md)).
 
-- Chargement via `llama-cpp-python` (bindings Python de `llama.cpp`).
-- Supporte l'offload partiel sur GPU (`n_gpu_layers`), le `mmap`, le `mlock`.
+**À mesurer.** Aucune valeur de perplexité, de qualité en français ou de vitesse n'est reprise ici : les tableaux comparatifs de la page portent sur un autre modèle et ne se transposent pas à LFM2.5. La révision précédente de cette fiche annonçait des choix de quantification « déjà testés » : affirmation retirée.
 
-## 3. Les « k-quants »
+**Décision Thot.** Une quantification n'entre au manifeste de distribution qu'accompagnée de son checksum et d'une fiche de mesure (OS, arch, backend, contexte, débit, pic mémoire), conformément à [C19](../contrats_transversaux.md).
 
-Les k-quants (Q4_K, Q5_K, Q6_K, etc.) sont une famille de quantification par blocs introduite dans `llama.cpp`. Le suffixe `_M` (moyen) et `_S` (petit) indique des variantes de même précision avec un trade-off taille/qualité légèrement différent.
+## Pile multimodale : mtmd, projecteurs, modèles OCR
 
-## 4. Éléments à surveiller dans Thot
+**Fait.** Le support multimodal de llama.cpp passe par la bibliothèque **libmtmd** et exige, en plus du modèle, un fichier de **projecteur multimodal** fourni séparément ; une option permet de garder ce projecteur hors GPU ([llama.cpp — docs/multimodal.md](https://github.com/ggml-org/llama.cpp/blob/master/docs/multimodal.md)).
 
-- **Modèles présents (phase 1)** : LFM2.5-8B-A1B en Q4_K_M (~5 Go), LFM2.5-VL-3B en Q4_K_XL, GLM-OCR en f16.
-- **Vision** : les modèles multimodaux (VL) requièrent souvent un réseau de projection **mmproj** assorti au GGUF, à charger avec `mmproj=` ; sans lui, l'image est traitée comme du texte (explosion du nombre de jetons).
-- **Quantification de la diffusion** (phase 2) : FLUX.2 Klein, sa VAE et son CLIP sont également quantifiés pour tenir en mémoire (voir [Annexe 03](03_flux_klein_generation.md)).
+**Fait.** Cette page liste des modèles préquantifiés « prêts à l'emploi » et renvoie, pour plusieurs modèles OCR récents (dont **GLM-OCR**, PaddleOCR-VL, Deepseek-OCR, Dots.OCR, HunyuanOCR), à des **discussions** dédiées plutôt qu'à des artefacts officiels ([llama.cpp — docs/multimodal.md](https://github.com/ggml-org/llama.cpp/blob/master/docs/multimodal.md)).
 
----
+**Fait.** `llama-cpp-python` fournit des handlers de vision nommés (llava 1.5/1.6, moondream2, nanollava, llama-3-vision-alpha, minicpm-v-2.6, qwen2.5-vl, gemma-4) **et un handler générique compatible mtmd** applicable à un GGUF disposant d'un projecteur mtmd et d'un gabarit de chat intégré ; la version publiée constatée est **0.3.35**, avec une mise à jour de llama.cpp vendored datée du 17 août 2026 ([README llama-cpp-python](https://github.com/abetlen/llama-cpp-python), [PyPI](https://pypi.org/project/llama-cpp-python/)).
 
-## Sources
+**Fait.** LFM2.5-VL-3B est publié en GGUF par Liquid AI et son usage documenté côté llama.cpp comprend un plafond explicite de jetons image ([Docs Liquid AI — LFM2.5-VL-3B](https://docs.liquid.ai/lfm/models/lfm25-vl-3b)). La valeur par défaut de ce plafond est `n.a.`.
 
-- Documentation officielle de quantification de `llama.cpp` : https://github.com/ggml-org/llama.cpp/blob/master/tools/quantize/README.md
-- Dépôt `llama.cpp` : https://github.com/ggml-org/llama.cpp
-- Évaluation de la quantification (« Which Quantization Should I Use? », arXiv) : https://arxiv.org/html/2601.14277v1
+**Fait.** GLM-OCR est un modèle compact de **0,9 B** (encodeur visuel 0,4 B + décodeur 0,5 B) ([GLM-OCR Technical Report, arXiv:2603.10910](https://arxiv.org/abs/2603.10910)), sous licence **MIT** d'après les métadonnées du dépôt ([API Hugging Face](https://huggingface.co/api/models/zai-org/GLM-OCR)).
+
+**Décision Thot.** La révision précédente affirmait des quantifications précises pour GLM-OCR et LFM2.5-VL (« f16 », « Q4_K_XL ») et l'existence d'un « CLIP quantifié » : ces mentions sont retirées, faute de source. La pile OCR/vision est donc décrite comme **une décision ouverte** ([decisions.md](../decisions.md)) avec deux chemins à qualifier :
+
+1. binding Python via le handler mtmd générique, sur la version exactement embarquée ;
+2. repli par binaire llama.cpp multimodal embarqué, si le binding échoue sur le couple (modèle, projecteur) retenu.
+
+Conformément à [C07](../contrats_transversaux.md), aucun repli ne consiste à retirer le projecteur ni à substituer un handler d'une autre architecture.
+
+**À mesurer** : disponibilité effective d'un GGUF + projecteur pour le modèle OCR retenu ; qualité OCR en français sur documents Thot ; pic mémoire du pipeline vision complet ; coût en jetons par page selon le plafond d'image.

@@ -1,47 +1,35 @@
-# Annexe 05 — Génération de documents en Python
+# Annexe 05 — Génération et lecture de documents
 
-Cette fiche recense les bibliothèques fiables pour **générer des fichiers** (CSV, PDF, Markdown) côté Python, utilisées en **phase 3**. Le principe général : le LLM produit du **contenu structuré**, Python le **matérialise**.
+Sources récupérées le **2026-09-06**. Conventions **Fait / Décision Thot / À mesurer** : voir le [sommaire des annexes](README.md).
 
----
+## CSV : l'injection de formules est le risque principal
 
-## 1. CSV
+**Fait.** L'injection CSV, aussi appelée « Formula Injection », survient lorsqu'une cellule commençant par `=` est interprétée comme une formule par un tableur ; les conséquences documentées vont du détournement de la machine de la victime à l'exfiltration du contenu des feuilles ouvertes ([OWASP — CSV Injection](https://owasp.org/www-community/attacks/CSV_Injection)).
 
-Utiliser le **module standard `csv`** : aucune dépendance, sortie garantie valide.
+**Fait.** Une cellule ne doit pas commencer par **`=`**, **`+`**, **`-`**, **`@`**, la tabulation (0x09), le retour chariot (0x0D) ou le saut de ligne (0x0A), ni par les variantes pleine largeur **`＝ ＋ － ＠`** ; OWASP précise en outre qu'il **ne suffit pas** de contrôler le premier caractère, car les séparateurs (`,` `;`) et les guillemets (`"` `'`) permettent d'ouvrir une nouvelle cellule ([OWASP — CSV Injection](https://owasp.org/www-community/attacks/CSV_Injection)). Le même test figure dans le guide de tests d'OWASP ([WSTG — Testing for CSV Injection](https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/07-Input_Validation_Testing/21-Testing_for_CSV_Injection)).
 
-- `csv.writer` pour écrire des lignes depuis une liste de listes.
-- Penser à définir le délimiteur et l'encodage (souvent `utf-8-sig` pour Excel).
+**Décision Thot.** Un écrivain CSV conforme garantit la **syntaxe**, pas l'**innocuité en tableur** : la validation de `generate_file` ([C13](../contrats_transversaux.md)) comprend donc une neutralisation explicite des préfixes ci-dessus, appliquée à chaque cellule, contenu généré par le modèle inclus.
 
-## 2. PDF
+## PDF : trois bibliothèques, trois régimes de licence
 
-| Bibliothèque | Orientation |
-| :--- | :--- |
-| **fpdf2** | simple, légère, orientée dessin pas-à-pas |
-| **reportlab** | riche, mise en page avancée (paragraphes, tableaux, flux) |
+| Bibliothèque | Fait (licence) | Source |
+| :--- | :--- | :--- |
+| **reportlab** | Licence **BSD**, Python ≥ 3.9 | [PyPI — reportlab](https://pypi.org/project/reportlab/) |
+| **fpdf2** | Licence **LGPL-3.0** | [Dépôt py-pdf/fpdf2](https://github.com/py-pdf/fpdf2), [texte de licence](https://github.com/py-pdf/fpdf2/blob/master/LICENSE) |
+| **PyMuPDF** | Double licence : **AGPL open source ou licence commerciale** (Artifex étant l'agent commercial exclusif de MuPDF) | [PyMuPDF — About](https://pymupdf.readthedocs.io/en/latest/about.html) |
 
-- `fpdf2` convient aux rapports simples (titres, paragraphes, tableaux basiques).
-- `reportlab` (avec `platypus`) convient aux mises en page complexes et au multi-pages automatique.
+**Décision Thot.** La pile de génération PDF est choisie d'abord sur la licence, ensuite sur les fonctionnalités : **BSD** est le régime le moins contraignant pour une application distribuée, **LGPL-3.0** impose des obligations sur la bibliothèque elle-même, et **AGPL** exige soit la conformité complète, soit l'achat d'une licence commerciale. Cet arbitrage doit être clos avant préproduction et consigné dans [decisions.md](../decisions.md), avec archivage sous `licenses/`.
 
-## 3. Markdown
+## Lecture de PDF : texte natif avant OCR
 
-Le Markdown n'est que du **texte** : écrire la chaîne produite par le modèle dans un fichier `.md` suffit. Aucune bibliothèque requise.
+**Fait.** PyMuPDF extrait le texte tel qu'il est codé dans le document, avec des variantes fournissant des positions de blocs et de mots ([PyMuPDF — Text recipes](https://pymupdf.readthedocs.io/en/latest/recipes-text.html)).
 
-## 4. Lecture / extraction (utile pour la recherche, phase 4)
+**Fait.** La même page avertit que l'extraction native peut produire un **ordre de lecture inattendu** et des sauts de ligne non voulus, l'ordre dépendant du producteur du PDF ([PyMuPDF — Text recipes](https://pymupdf.readthedocs.io/en/latest/recipes-text.html)).
 
-- **PyMuPDF** (`pymupdf`) : lecture de PDF, rendu des pages en image (utile pour l'OCR page par page), extraction de texte.
-- **trafilatura** : extraction du contenu principal d'une page web (nettoyage HTML → texte).
-- **BeautifulSoup** : parsing HTML générique.
+**Décision Thot.** Conformément à [C12](../contrats_transversaux.md), la lecture tente d'abord le texte natif et ne déclenche l'OCR que sur les pages sans texte exploitable, ou lorsque la mise en page/les tableaux le justifient. Le fait qu'un texte soit extrait n'implique pas qu'il soit dans le bon ordre : la reconstruction par positions est une piste **à mesurer** sur les documents réels de test.
 
-## 5. Bonnes pratiques de génération
+**À mesurer / `n.a.`** : dépendances et prérequis exacts du chemin OCR de PyMuPDF (moteur externe, variables d'environnement) — non confirmés par une page récupérée ; qualité d'ordre de lecture sur le corpus de test Thot ; coût mémoire du rendu de pages en lots bornés.
 
-- **Jamais de base64 ni de flux binaire venant du LLM** : le modèle émet des champs texte (lignes, titre, paragraphes), Python les assemble.
-- **Valider les entrées** : nombre de colonnes, encodage, chemins de sortie.
-- **Renvoyer un chemin + métadonnées** à l'interface, pas le contenu du fichier.
+## Rappel de portée
 
----
-
-## Sources
-
-- fpdf2 — documentation : https://py-pdf.github.io/fpdf2/
-- reportlab — documentation : https://docs.reportlab.com/
-- PyMuPDF — documentation : https://pymupdf.readthedocs.io/
-- trafilatura — dépôt : https://github.com/adbar/trafilatura
+**Fait de conception, pas de source.** Un PDF ouvrable n'implique pas des chiffres justes : [C13](../contrats_transversaux.md) distingue validité technique, fidélité aux données et exactitude factuelle. Les annexes ne fournissent aucun exemple de code exécutable ; elles justifient les règles de validation.
