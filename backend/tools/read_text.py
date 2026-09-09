@@ -13,7 +13,9 @@ class ReadTextArgs(BaseModel):
 class ReadTextTool(BaseTool):
     name = "read_text"
     description = (
-        "Lit le contenu d'un fichier textuel disponible dans la conversation : TXT, Markdown, JSON, CSV, code source ou texte déjà extrait. Utilise-le lorsqu'une réponse fiable dépend du contenu exact du fichier."
+        "Lit le contenu d'un fichier textuel disponible dans la conversation : TXT, Markdown, JSON, CSV, code source ou texte déjà extrait. "
+        "Passe source_id (id exact du registre SOURCES ou de get_source) et purpose ; n'invente jamais d'id. "
+        "Utilise-le lorsqu'une réponse fiable dépend du contenu exact du fichier."
     )
     input_model = ReadTextArgs
     timeout_s = 5.0

@@ -1,5 +1,6 @@
-# Modèles locaux très volumineux
-models/
+# Modèles locaux très volumineux (README versionné, GGUF exclus)
+models/*
+!models/README.md
 *.gguf
 *.safetensors
 
@@ -34,7 +35,12 @@ build/
 dist/
 *.spec
 
+# Référence documentation (clone Depot_Github) — ne pas versionner le gros clone
+Depot_Github/
+Flux2-Klein-9b/
+
 # Fichiers temporaires et système
 tmp/
 *.log
 .DS_Store
+.pytest_cache/

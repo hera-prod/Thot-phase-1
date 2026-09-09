@@ -8,8 +8,9 @@ export function useAttachmentDrop() {
   const dragCounterRef = useRef(0);
 
   const processFiles = useCallback((files: File[]) => {
-    const { files: accepted, errors } = validateAttachments(files);
-    if (errors.length > 0) showToast({ type: "error", title: "Fichiers ignores", message: errors.join(", ") });
+    const { files: accepted, errors, warnings } = validateAttachments(files);
+    if (errors.length > 0) showToast({ type: "error", title: "Fichiers ignorés", message: errors.join(", ") });
+    if (warnings.length > 0) showToast({ type: "info", title: "Redimensionnement", message: warnings.join(", ") });
     if (accepted.length > 0) addFiles(accepted);
   }, [addFiles]);
 

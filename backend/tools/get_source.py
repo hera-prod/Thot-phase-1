@@ -6,15 +6,17 @@ from backend.tools.base import BaseTool, ToolContext, ToolResult
 
 class GetSourceArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    source_id: str = Field(min_length=1, description="Identifiant exact d'une source listée dans le registre")
-    reason: str = Field(min_length=1, max_length=500, description="Pourquoi la source doit être récupérée")
+    # R3 : source_id OPTIONNEL — omis = lister TOUS les fichiers de la conversation
+    source_id: str | None = Field(default=None, description="Identifiant exact d'une source listée dans le registre. OMETTRE pour lister tous les fichiers liés à la conversation")
+    reason: str = Field(min_length=1, max_length=500, description="Pourquoi la source doit être récupérée (ou listée)")
 
 class GetSourceTool(BaseTool):
     name = "get_source"
     description = (
-        "Retrouve une source précédemment jointe à cette conversation. "
-        "Utilise cet outil lorsqu'une question semble faire référence à une image, un PDF, un texte ou un autre fichier déjà mentionné plus tôt, mais que le fichier n'est pas joint au tour courant. "
-        "L'outil renvoie les métadonnées sûres et un chemin de travail utilisable uniquement par les outils autorisés."
+        "Montre et retrouve les fichiers liés à cette conversation (outil registre, R3). "
+        "SANS source_id : renvoie la liste de TOUS les fichiers joints à la conversation (images, PDF, textes) avec leurs ids utilisables par vision/doc_ocr/read_text — utilise-le dès que tu ignores quels fichiers existent. "
+        "AVEC source_id : renvoie les métadonnées sûres et un chemin de travail d'un fichier précis. "
+        "Utilise cet outil lorsqu'une question semble faire référence à un fichier déjà mentionné plus tôt mais non joint au tour courant."
     )
     input_model = GetSourceArgs
     timeout_s = 5.0

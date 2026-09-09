@@ -67,7 +67,26 @@
   box-shadow: 0 8px 24px rgba(38,31,19,0.12);
 }
 
+/* Refus §3 : couleur rouge/désaturée + libellé, pas seule couleur §4 */
+.composerShellRefus {
+  border-color: color-mix(in srgb, #c0392b 55%, var(--thot-border));
+  background: color-mix(in srgb, #c0392b 6%, var(--thot-surface-raised));
+}
+.composerDropOverlayRefus {
+  background: color-mix(in srgb, #c0392b 14%, var(--thot-surface-raised) 86%);
+  border: 1px dashed #c0392b;
+}
+.composerDropOverlayRefus .composerDropIcon { color: #c0392b; }
+.composerDropOverlayRefus .composerDropLabel { color: #7a1a12; }
+.pageDragAmbientRefus { background: color-mix(in srgb, #c0392b 6%, transparent); }
+.pageDragHintRefus {
+  border-color: #c0392b;
+  background: #fff5f5;
+  color: #7a1a12;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .composerShellAmbientHighlight { animation: none; }
   .composerShellActiveDrop, .composerDropOverlay { transition: none; animation: none; }
+  .pageDragAmbientOverlay, .composerDropOverlay { animation: none; }
 }

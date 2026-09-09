@@ -13,7 +13,9 @@ from backend.tools.base import BaseTool, ToolContext, ToolResult
 class VisionOCRArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
     query: str | None = Field(default=None, max_length=2000, description="Question ciblée OCR, sinon OCR complet")
-    pdf_path: str = Field(min_length=1, description="Chemin /tmp/thot/{request_id}/doc.pdf")
+    # artifact_id durable annexe 10 (recommandé) — pdf_path conservé en compat
+    artifact_id: str | None = Field(default=None, description="ID exact du registre SOURCES (recommandé, ex: art_9f7584c3f77b)")
+    pdf_path: str | None = Field(default=None, description="Chemin direct du fichier (compat, préfère artifact_id)")
     image_hash: str | None = Field(default=None, description="sha256:hash")
 
 
@@ -21,6 +23,7 @@ class VisionOCRTool(BaseTool):
     name = "doc_ocr"
     description = (
         "Extraction fidèle de texte présent dans une image ou un document, y compris un fichier déjà envoyé précédemment dans la conversation. "
+        "Passe artifact_id (id exact du registre SOURCES) et query ; n'invente jamais de chemin. "
         "Utilise cet outil quand la réponse dépend d'un texte visible sur une image (inscription, étiquette, tatouage, panneau, tableau, document) que tu n'as jamais fait lire par cet outil. Ne réponds jamais sur la présence ou l'absence de texte sans avoir appelé cet outil."
     )
     input_model = VisionOCRArgs
@@ -28,9 +31,32 @@ class VisionOCRTool(BaseTool):
     max_output_chars = 10000
 
     async def execute(self, args: VisionOCRArgs, ctx: ToolContext) -> ToolResult:
-        if not args.pdf_path:
-            return ToolResult(ok=False, display_summary="doc_ocr: pdf_path manquant", error="pdf_path vide")
-        path = Path(args.pdf_path)
+        # Annexe 10 : artifact_id résolu en chemin durable avant pdf_path compat
+        pdf_path = args.pdf_path
+        if args.artifact_id and not pdf_path:
+            try:
+                from backend.db.database import SessionLocal
+                from backend.db.models import Artifact, Blob
+                from backend.config.paths import get_data_dir
+                db = SessionLocal()
+                try:
+                    art = db.query(Artifact).filter(Artifact.id == args.artifact_id).first()
+                    if art is not None:
+                        blob = db.query(Blob).filter(Blob.id == art.blob_id).first()
+                        if blob is not None:
+                            cand = get_data_dir() / blob.relative_path
+                            if cand.exists():
+                                pdf_path = str(cand)
+                finally:
+                    try:
+                        db.close()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        if not pdf_path:
+            return ToolResult(ok=False, display_summary="doc_ocr: artifact_id ou pdf_path manquant", error="vide")
+        path = Path(pdf_path)
         from backend.config.paths import THOT_TMP
 
         try:

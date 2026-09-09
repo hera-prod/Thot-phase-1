@@ -26,11 +26,8 @@ def test_english_prefix_leak():
 def test_detect_textual_vision():
     content = "[vision(image_path=\"/tmp/thot/abc.png\", query=\"Décris\")]  Suite"
     calls = _detect_textual_tool_calls(content)
-    assert len(calls) == 1
-    assert calls[0]["function"]["name"] == "vision"
-    import json
-    args = json.loads(calls[0]["function"]["arguments"])
-    assert args["image_path"] == "/tmp/thot/abc.png"
+    # Annexe 10 Lot 1 : [vision(...)] textuel = INVALID_DECISION, jamais converti
+    assert len(calls) == 0
     stripped = _strip_textual_tool_calls(content)
     assert "[vision" not in stripped
     assert "Suite" in stripped
@@ -39,8 +36,8 @@ def test_detect_textual_vision():
 def test_detect_textual_ocr():
     content = "Blabla [doc_ocr(pdf_path='/tmp/thot/doc.pdf')] end"
     calls = _detect_textual_tool_calls(content)
-    assert len(calls) == 1
-    assert calls[0]["name"] == "doc_ocr"
+    # Annexe 10 Lot 1 : textuel = INVALID, jamais exécuté
+    assert len(calls) == 0
 
 
 def test_no_false_positive():

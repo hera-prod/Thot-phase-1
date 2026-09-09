@@ -34,6 +34,7 @@ interface Message {
   thinking?: string;
   thinkingCollapsed?: boolean;
   images?: string[]; // objectURL previews (éphémères)
+  files?: { name: string; kind: string }[]; // pièces jointes non-image (PDF...) rechargées d'historique
   toolCalls?: ToolCallItem[];
   executionPlan?: { attachmentKind?: string | null; intent: string; selectedTool?: string | null; selectedModel?: string | null; reason: string };
 }
@@ -111,9 +112,11 @@ export function ChatConversation({ mode: propMode }: ChatConversationProps) {
   const [showRail, setShowRail] = useState(true);
   const debugMode = (() => { try { return localStorage.getItem('thot_debug') === '1'; } catch { return false; } })();
   const { isDraggingFiles } = useAttachmentDraft();
-  const { handleDragEnter: handlePageDragEnter, handleDragOver: handlePageDragOver, handleDragLeave: handlePageDragLeave, handleDrop: handlePageDrop } = useAttachmentDrop();
+  // Annexe 09 : le dépôt est géré uniquement par Composer (source unique natif), pas de double handler page (évite 3x)
+  // useAttachmentDrop gardé pour compat mais non branché au layout (évite bubbling)
   const scrollRef = useRef<HTMLDivElement>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
+  const currentConvIdRef = useRef<string | null>(id ?? null);
   const currentRequestIdRef = useRef<string | null>(null);
   const chatStateRef = useRef<ChatState>('idle');
   const hasSentInitialRef = useRef(false);
@@ -299,15 +302,43 @@ export function ChatConversation({ mode: propMode }: ChatConversationProps) {
   useEffect(() => {
     if (!id) return;
     setTitle(`Conversation ${id.slice(0, 8)} — ${mode === 'agent' ? 'Agent' : 'Chat'}`);
-    // Charge l'historique existant depuis DB via Tauri
-    listMessages(id).then((msgs) => {
+    // Charge l'historique existant depuis DB via Tauri + vignettes persistées (annexe 10).
+    // Pourquoi recharger les images : à l'envoi on n'affiche que des previews éphémères
+    // (objectURL/blob: ou asset:// du staging) qui meurent au rechargement ; la vérité durable
+    // est en DB (message_attachments → blobs). Sans ce rechargement, l'historique montre du
+    // texte seul alors que le backend, lui, revoit très bien les fichiers (bug q-r.md 09/09).
+    listMessages(id).then(async (msgs) => {
       if (!msgs || msgs.length === 0) return;
-      setMessages(msgs.map((m) => ({
-        id: m.id as string,
-        role: m.role as 'user' | 'assistant',
-        content: (m.content as string) || '',
-        thinking: (m as unknown as { thinking?: string }).thinking,
-      })));
+      const mapped: Message[] = [];
+      const { getAttachmentBytes } = await import("../../lib/tauri");
+      for (const m of msgs) {
+        const base: Message = {
+          id: m.id as string,
+          role: m.role as 'user' | 'assistant',
+          content: (m.content as string) || '',
+          thinking: (m as unknown as { thinking?: string }).thinking,
+        };
+        const atts = (m as unknown as { attachments?: Array<{ id: string; kind: string; name: string; mime: string }> }).attachments ?? [];
+        if (atts.length > 0) {
+          const imgs: string[] = [];
+          const files: { name: string; kind: string }[] = [];
+          for (const a of atts) {
+            const isImg = (a.kind || '').toLowerCase() === 'image' || (a.mime || '').startsWith('image/');
+            if (!isImg) { files.push({ name: a.name, kind: a.kind || 'fichier' }); continue; }
+            try {
+              const [bytes, mime] = await getAttachmentBytes(a.id);
+              const url = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: mime || 'image/png' }));
+              imgs.push(url);
+            } catch {
+              files.push({ name: a.name, kind: a.kind || 'image' });
+            }
+          }
+          if (imgs.length) base.images = imgs;
+          if (files.length) base.files = files;
+        }
+        mapped.push(base);
+      }
+      setMessages(mapped);
     }).catch(() => { /* pas de DB en dev */ });
     if (initialState?.initialMessage && !hasSentInitialRef.current) {
       hasSentInitialRef.current = true;
@@ -327,12 +358,31 @@ export function ChatConversation({ mode: propMode }: ChatConversationProps) {
 
     const request_id = crypto.randomUUID();
     currentRequestIdRef.current = request_id;
+    
+    // Use existing conv_id from route, or generate once and persist for this conversation
+    if (!currentConvIdRef.current) {
+      currentConvIdRef.current = request_id;
+    }
+    const conv_id = currentConvIdRef.current;
     setChatState('preparing');
 
     const previewUrls: string[] = [];
     if (files) {
       for (const f of files) {
-        if (f.type.startsWith('image/')) previewUrls.push(URL.createObjectURL(f));
+        const staged = (f as unknown as { _stagedPath?: string })._stagedPath;
+        if (staged) {
+          try {
+            const { convertFileSrc } = await import("@tauri-apps/api/core");
+            previewUrls.push(convertFileSrc(staged));
+          } catch {
+            // fallback : pas de preview, l'image sera visible après rechargement historique
+          }
+          continue;
+        }
+        if (f.type.startsWith('image/') && f.size > 0) previewUrls.push(URL.createObjectURL(f));
+        else if (f.name.toLowerCase().endsWith('.png') || f.name.toLowerCase().endsWith('.jpg') || f.name.toLowerCase().endsWith('.webp')) {
+          try { if (f.size>0) previewUrls.push(URL.createObjectURL(f)); } catch {}
+        }
       }
     }
     const userMsg: Message = { id: `user-${Date.now()}`, role: 'user', content: message, images: previewUrls };
@@ -352,16 +402,77 @@ export function ChatConversation({ mode: propMode }: ChatConversationProps) {
 
     try {
       let image_paths: string[] | undefined;
+      let attachment_ids: string[] | undefined;
       if (files && files.length > 0) {
-        image_paths = [];
+        // Annexe 10 : promotion stage → artifact avant run. D'où viennent les 3 formes :
+        // drag natif = File vide + _stagedPath/_stageItemId (posés par Composer), trombone =
+        // File réel (à stager via stagePickerBytes). Où vont les ids : attachmentsPrepare
+        // (Rust) rend des artifactIds art_xxx scopés à conv_id → chatSend. Pourquoi 3 replis
+        // (artifact → stagedPath → saveUpload) : chaque étage peut manquer (Rust indispo,
+        // staging expiré) ; mieux vaut envoyer le fichier par une voie dégradée que d'échouer.
+        const stageItemIds: string[] = [];
+        const toStage: File[] = [];
         for (const file of files) {
-          const buf = new Uint8Array(await file.arrayBuffer());
-          const [path] = await saveUpload(request_id, file.name, buf);
-          image_paths.push(path);
+          const stageId = (file as unknown as { _stageItemId?: string })._stageItemId;
+          const staged = (file as unknown as { _stagedPath?: string })._stagedPath;
+          if (stageId) {
+            stageItemIds.push(stageId);
+          } else if (staged) {
+            // Ancien drag compat : stagedPath sans stageItemId → dérive stageItemId depuis hash
+            const hash = staged.split('/').pop()?.split('.')[0] ?? "";
+            if (hash) stageItemIds.push(`sti_${hash.slice(0,12)}`);
+            else toStage.push(file);
+          } else {
+            toStage.push(file);
+          }
+        }
+        // Fichiers non stagés (trombone) → stage_picker_bytes
+        if (toStage.length > 0) {
+          const { stagePickerBytes } = await import("../../lib/tauri");
+          for (const file of toStage) {
+            const buf = new Uint8Array(await file.arrayBuffer());
+            if (buf.length === 0) {
+              showToast({ type: 'error', title: 'Fichier vide', message: file.name });
+              continue;
+            }
+            const resp = await stagePickerBytes(request_id, file.name, buf);
+            for (const it of resp.items) stageItemIds.push(it.stageItemId);
+            if (resp.rejected.length) {
+              showToast({ type: 'error', title: 'Fichiers rejetés', message: resp.rejected.map(r=>r.message).join(', ') });
+            }
+          }
+        }
+        // Promotion stage → artifact
+        if (stageItemIds.length > 0) {
+          const { attachmentsPrepare } = await import("../../lib/tauri");
+          try {
+            const prep = await attachmentsPrepare(conv_id, stageItemIds, request_id);
+            attachment_ids = prep.items.map(i => i.artifactId);
+            // Fallback compat : si promotion échoue, garde image_paths via stagedPath
+            if (attachment_ids.length === 0) {
+              // Compat : utilise stagedPath direct
+              image_paths = stageItemIds.map(sid => {
+                const f = files.find(ff => (ff as unknown as { _stageItemId?: string })._stageItemId === sid);
+                return (f as unknown as { _stagedPath?: string })?._stagedPath ?? "";
+              }).filter(Boolean) as string[];
+            }
+          } catch (e) {
+            // Fallback compat : envoie stagedPath direct
+            image_paths = files.map(f => (f as unknown as { _stagedPath?: string })._stagedPath).filter(Boolean) as string[];
+            if (image_paths.length === 0) {
+              // Dernier fallback : saveUpload
+              image_paths = [];
+              for (const file of files) {
+                const buf = new Uint8Array(await file.arrayBuffer());
+                const [path] = await saveUpload(request_id, file.name, buf);
+                image_paths.push(path);
+              }
+            }
+          }
         }
       }
 
-      await chatSend({ request_id, message, mode, image_paths, conv_id: id });
+      await chatSend({ request_id, message, mode, image_paths, attachment_ids, conv_id: conv_id });
       setChatState('preparing');
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -410,7 +521,7 @@ export function ChatConversation({ mode: propMode }: ChatConversationProps) {
         </div>
       </div>
 
-      <div className="conversationLayout messagesViewport" onDragEnter={handlePageDragEnter} onDragOver={handlePageDragOver} onDragLeave={handlePageDragLeave} onDrop={handlePageDrop} style={{ position: 'relative' }}>
+      <div className="conversationLayout messagesViewport" style={{ position: 'relative' }}>
         {isDraggingFiles && (
           <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, background: 'var(--thot-gold-soft)', border: '2px dashed var(--thot-gold)', borderRadius: 12, zIndex: 5, pointerEvents: 'none', fontSize: 14, fontWeight: 600, color: 'var(--thot-gold)' }}>
             Déposez vos images ou documents ici
@@ -432,6 +543,15 @@ export function ChatConversation({ mode: propMode }: ChatConversationProps) {
                       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: msg.content ? 8 : 0 }}>
                         {msg.images.map((src, i) => (
                           <img key={i} src={src} alt={`image ${i + 1}`} style={{ maxWidth: 120, maxHeight: 120, borderRadius: 8, border: '1px solid rgba(0,0,0,0.1)', objectFit: 'cover' }} />
+                        ))}
+                      </div>
+                    )}
+                    {msg.files && msg.files.length > 0 && (
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: msg.content ? 8 : 0 }}>
+                        {msg.files.map((f, i) => (
+                          <span key={i} title={f.name} style={{ fontSize: 12, padding: '4px 8px', borderRadius: 8, border: '1px solid var(--thot-border-subtle)', background: 'var(--thot-surface-subtle)', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            📄 {f.name}
+                          </span>
                         ))}
                       </div>
                     )}

@@ -17,20 +17,38 @@ from pathlib import Path
 
 from backend.inference.ipc import emit, log
 
+# --- SharedContext C03 (une seule base versionnée par tour) ---
+from dataclasses import dataclass
+
+@dataclass
+class SharedContext:
+    """Base commune orchestrator/générateur C03 : même révision, ajouts distincts."""
+    conversation_id: str
+    revision: int  # incrémental (compte messages) pour valider compaction
+    history: list[dict]  # user↔assistant ordonnés, sans tool traces passées
+    registry: list[dict]  # catalogue compact
+    message: str  # message courant exactement une fois
+
 MAX_VISION_SIDE = 1536
 
 def prepare_vision_image(input_path: Path, output_path: Path) -> Path:
-    """Prétraite image pour VL : EXIF transpose + max 1536px + JPEG 88 si besoin."""
+    """Prétraite image pour VL : EXIF transpose + max 1536px + JPEG 88 (NaFlex 512)
+    Tracer réduction §151 backend_outils : ne pas imposer réglage universel, mais log transformation.
+    """
     try:
         from PIL import Image, ImageOps
         image = Image.open(input_path)
+        orig_w, orig_h = image.size
         image = ImageOps.exif_transpose(image)
-        # thumbnail garde ratio, ne grossit pas si plus petit
+        # thumbnail garde ratio, ne grossit pas si plus petit (budget pixels borné, pas Mo fixe)
+        before = image.size
         image.thumbnail((MAX_VISION_SIDE, MAX_VISION_SIDE))
+        after = image.size
+        if before != after:
+            log(f"[prepare_vision_image] resize {orig_w}x{orig_h} -> {after[0]}x{after[1]} (NaFlex 512 patches, tracer)")
         if image.mode not in ("RGB", "L"):
             image = image.convert("RGB")
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        # JPEG 88 est plus léger que PNG pour VL, qualité suffisante
         if image.width * image.height > 0:
             image.save(output_path, format="JPEG", quality=88, optimize=True)
             return output_path
@@ -83,18 +101,10 @@ def _sanitize_content(content: str) -> tuple[str, str | None]:
 
 
 def _detect_textual_tool_calls(content: str) -> list[dict]:
-    """Détecte [vision(image_path="...")] ou [doc_ocr(pdf_path="...")] textuels → tool_calls structurés (PR #24178 fallback)."""
-    calls = []
-    for m in _TEXTUAL_TOOL_RE.finditer(content):
-        tool = m.group(1).lower()
-        path = m.group(2)
-        args = {"image_path": path} if tool == "vision" else {"pdf_path": path}
-        # extrait query si présent dans même parenthèse (query="...")
-        qm = re.search(r"query\s*=\s*[\"']([^\"']+)[\"']", m.group(0), re.IGNORECASE)
-        if qm:
-            args["query"] = qm.group(1)
-        calls.append({"id": f"textual_{tool}_{len(calls)}", "function": {"name": tool, "arguments": json.dumps(args)}, "name": tool})
-    return calls
+    """Annexe 10 Lot 1 : tout [vision(...)] textuel est INVALID_DECISION, jamais exécuté (C04)."""
+    if _TEXTUAL_TOOL_RE.search(content):
+        log("[INVALID_DECISION] [vision(...)] textuel détecté — refusé, ne jamais exécuter ni diffuser")
+    return []
 
 
 def _strip_textual_tool_calls(content: str) -> str:
@@ -154,9 +164,14 @@ def _format_tool_observation(tool: str, result: dict, attachment_name: str) -> s
 
 
 def asks_for_text_extraction(message: str) -> bool:
-    text = message.lower()
-    ocr_terms = ("ocr","extrais le texte","extraire le texte","lis le texte","lire le texte","transcris","transcrire","texte sur l'image","texte dans l'image","quel est le texte","que dit ce document","tableau","facture","scan")
-    return any(term in text for term in ocr_terms)
+    # Unifié avec media_policy.OCR_REQUEST_TERMS (q-r.md : "lire ce qu'il y a d'écrit en japonais")
+    try:
+        from backend.inference.media_policy import asks_for_text as _asks
+        return _asks(message)
+    except Exception:
+        text = (message or "").lower()
+        ocr_terms = ("ocr","extrais le texte","transcris","transcrire","tableau","facture","scan")
+        return any(term in text for term in ocr_terms)
 
 def resolve_allowed_tools(message: str, image_paths: list[str] | None) -> list[str]:
     has_pdf = any(Path(p).suffix.lower() == ".pdf" for p in (image_paths or []))
@@ -172,10 +187,52 @@ def resolve_allowed_tools(message: str, image_paths: list[str] | None) -> list[s
 def build_attachment_brief(message: str, result: dict) -> str:
     return f"Analyse reussie pour : {message}\n\n{result.get('result','')[:4000]}"
 
+
+def plan_media_tools(message: str, current_entries: list[dict]) -> list[dict]:
+    """Plan déterministe pur (testable sans modèle) : quelle outil pour chaque artefact du tour.
+
+    Règle P0 : pdf→doc_ocr, image→vision, image + demande explicite de texte→doc_ocr.
+    Seuls les artefacts disponibles (available) sont planifiés.
+    Retourne [{tool, artifact_id, name}] — jamais de LLM impliqué.
+    """
+    plan: list[dict] = []
+    try:
+        from backend.inference.media_policy import resolve_tool_for as _resolve_tool
+    except Exception:
+        _resolve_tool = None
+    for e in current_entries or []:
+        if not e.get("available", True):
+            continue
+        art_id = e.get("id")
+        if not art_id:
+            continue
+        if _resolve_tool is not None:
+            tool = _resolve_tool(e.get("kind") or "", message, asks_for_text_extraction)
+        else:
+            kind = (e.get("kind") or "").lower()
+            tool = "doc_ocr" if (kind == "pdf" or asks_for_text_extraction(message)) else "vision"
+        plan.append({"tool": tool, "artifact_id": art_id, "name": e.get("name") or art_id})
+    return plan
+
+
+def pick_reinspection_entry(message: str, history_entries: list[dict]) -> dict | None:
+    # Délègue à la politique officielle (media_policy.pick_target) — compat conservée
+    try:
+        from backend.inference.media_policy import pick_target as _pick
+        return _pick(message, history_entries)
+    except Exception:
+        avail = [e for e in (history_entries or []) if e.get("available", True) and e.get("id")]
+        return avail[-1] if avail else None
+
 def requires_media_reinspection(message: str) -> bool:
-    text = message.lower()
-    reference_terms = ("cette image","cette photo","la première image","la seconde image","la deuxième image","l'image précédente","l'image d'avant","celle-ci","celle-là","dans l'image","sur l'image","dans la photo","dans le document","vérifie","regarde à nouveau","relis","réanalyse","première image","deuxième image")
-    return any(term in text for term in reference_terms)
+    # Délègue à la politique officielle (media_policy.py, 3 couches) — compat conservée
+    try:
+        from backend.inference.media_policy import needs_reinspection as _needs
+        return _needs(message)
+    except Exception:
+        text = (message or "").lower()
+        reference_terms = ("cette image","cette photo","dans l'image","sur l'image","première image","deuxième image")
+        return any(term in text for term in reference_terms)
 
 def resolve_reinspection_tool(message: str) -> str:
     text = message.lower()
@@ -220,13 +277,43 @@ def _get_past_source_path(conv_id: str, message: str) -> tuple[str, str] | None:
                 target = images[-1] if images else None
             if target is None:
                 return None
-            # Résout chemin absolu depuis relative_path si présent
+            # Résout chemin absolu depuis relative_path (portable C19)
             if target.relative_path:
-                media_root = __import__("pathlib").Path.home() / ".local" / "share" / "thot"
-                abs_path = media_root / target.relative_path
-                if abs_path.exists():
-                    return str(abs_path), target.original_name or target.path
-            if target.path and __import__("pathlib").Path(target.path).exists():
+                try:
+                    from backend.config.paths import get_data_dir
+                    data_dir = get_data_dir()
+                    # relative_path = media/{hash}.ext ou blobs/{hash}.ext
+                    # Cherche sous data_dir puis sous data_dir/media, data/blobs
+                    for base in [data_dir, data_dir / "media", data_dir / "blobs"]:
+                        cand = base / Path(target.relative_path).name if "/" not in target.relative_path else data_dir / target.relative_path
+                        # Essai direct
+                        cand2 = data_dir / target.relative_path
+                        if cand2.exists():
+                            return str(cand2), target.original_name or target.path
+                        try:
+                            from backend.db.media_cache import get_media_root
+                            mr = get_media_root()
+                            abs_path2 = mr / Path(target.relative_path).name
+                            if abs_path2.exists():
+                                return str(abs_path2), target.original_name or target.path
+                        except Exception:
+                            pass
+                    # fallback legacy home
+                    mr_legacy = Path.home() / ".local" / "share" / "thot" / target.relative_path
+                    if mr_legacy.exists():
+                        return str(mr_legacy), target.original_name or target.path
+                except Exception:
+                    pass
+                # dernier fallback : media_root direct
+                try:
+                    from backend.db.media_cache import get_media_root
+                    mr = get_media_root()
+                    abs_path = mr / Path(target.relative_path).name
+                    if abs_path.exists():
+                        return str(abs_path), target.original_name or target.path
+                except Exception:
+                    pass
+            if target.path and Path(target.path).exists():
                 return target.path, target.original_name or target.path
             return None
         finally:
@@ -274,10 +361,17 @@ def build_attachment_registry(conv_id: str, image_paths: list[str] | None = None
                 abs_available = False
                 try:
                     if s.relative_path:
-                        media_root = __import__("pathlib").Path.home() / ".local" / "share" / "thot"
-                        abs_available = (media_root / s.relative_path).exists()
+                        from backend.db.media_cache import get_media_root
+                        from backend.config.paths import get_data_dir
+                        # Teste plusieurs emplacements portables
+                        data_dir = get_data_dir()
+                        cand = data_dir / s.relative_path
+                        mr = get_media_root()
+                        abs_available = cand.exists() or (mr / Path(s.relative_path).name).exists() or (mr / s.relative_path).exists()
+                        if not abs_available:
+                            abs_available = (Path.home() / ".local" / "share" / "thot" / s.relative_path).exists()
                     elif s.path:
-                        abs_available = __import__("pathlib").Path(s.path).exists()
+                        abs_available = Path(s.path).exists()
                 except Exception:
                     pass
                 registry.append({"id": s.id, "ordinal": i+1, "index": i+1, "kind": s.media_kind or ("pdf" if (s.path and s.path.lower().endswith(".pdf")) else "image"), "name": s.original_name or Path(s.path).name if s.path else f"source_{i+1}", "path": s.relative_path or s.path, "first_seen_in_message": s.msg_id, "message_index": msg_index_map.get(s.msg_id, 0), "available": abs_available, "previous_analyses": prev})
@@ -293,6 +387,73 @@ def build_attachment_registry(conv_id: str, image_paths: list[str] | None = None
         log(f"[registry] build failed: {e}")
         return [{"id": "pending_1", "ordinal": 1, "index": 1, "kind": "image", "name": Path(p).name, "path": p, "first_seen_in_message": "current", "message_index": 1, "available": True, "previous_analyses": []} for p in (image_paths or [])]
 
+def build_history_artifact_entries(conv_id: str, exclude_ids: set[str] | None = None) -> list[dict]:
+    """Registre historique annexe 10 : artefacts des tours précédents via MessageAttachment.
+
+    Sans ça, un follow-up texte ("et là ?") ne voit aucun fichier : attachment_ids est vide
+    et build_attachment_registry ne connaît que la table legacy Source → tool_defs=[].
+    Retourne des entrées au même schéma que le registre courant (id/ordinal/name/...).
+    """
+    entries: list[dict] = []
+    try:
+        from backend.db.database import SessionLocal as _SLH
+        from backend.db.models import Artifact as _ArtH, Blob as _BlobH, Message as _MsgH, MessageAttachment as _MAH
+        from backend.config.paths import get_data_dir as _gddH
+        excluded = exclude_ids or set()
+        _db = _SLH()
+        try:
+            rows = (
+                _db.query(_MAH, _MsgH)
+                .join(_MsgH, _MAH.message_id == _MsgH.id)
+                .filter(_MsgH.conv_id == conv_id)
+                .order_by(_MsgH.created_at.asc(), _MAH.ordinal.asc())
+                .all()
+            )
+            # message_id -> index pour message_index
+            msgs = (
+                _db.query(_MsgH)
+                .filter(_MsgH.conv_id == conv_id)
+                .order_by(_MsgH.created_at.asc(), _MsgH.id.asc())
+                .all()
+            )
+            msg_index = {m.id: idx + 1 for idx, m in enumerate(msgs)}
+            seen: set[str] = set()
+            for ma, m in rows:
+                if ma.artifact_id in excluded or ma.artifact_id in seen:
+                    continue
+                art = _db.query(_ArtH).filter(_ArtH.id == ma.artifact_id).first()
+                if not art:
+                    continue
+                seen.add(ma.artifact_id)
+                blob = _db.query(_BlobH).filter(_BlobH.id == art.blob_id).first()
+                available = False
+                if blob and blob.relative_path:
+                    try:
+                        available = (_gddH() / blob.relative_path).exists()
+                    except Exception:
+                        pass
+                entries.append({
+                    "id": ma.artifact_id,
+                    "ordinal": 0,  # renuméroté à la fusion
+                    "index": 0,
+                    "kind": art.kind,
+                    "name": art.original_filename or art.display_name or ma.artifact_id,
+                    "path": blob.relative_path if blob else "",
+                    "first_seen_in_message": ma.message_id,
+                    "message_index": msg_index.get(ma.message_id, 0),
+                    "available": available,
+                    "previous_analyses": [],
+                })
+        finally:
+            try:
+                _db.close()
+            except Exception:
+                pass
+    except Exception as e:
+        log(f"[registry] history build failed: {e}")
+    return entries
+
+
 def format_attachment_registry(registry: list[dict]) -> str:
     if not registry:
         return "Aucun fichier dans cette conversation."
@@ -301,20 +462,82 @@ def format_attachment_registry(registry: list[dict]) -> str:
     for r in registry:
         prev = r.get("previous_analyses") or []
         prev_str = f"Analyse précédente : {prev[0]['tool']} {prev[0]['status']} — {prev[0]['summary']}" if prev else "Analyse précédente : aucune"
-        lines.append(f" [{r.get('ordinal')}] source_id={r.get('id')} Type : {r.get('kind')} Nom : {r.get('name')} Tour d'origine : {r.get('message_index')} Disponible : {'oui' if r.get('available') else 'non'} {prev_str} Résumé : {prev[0]['summary'] if prev else ''}".strip())
-    return "\n".join(lines) + "\n\n" + json.dumps([{"id": r["id"], "ordinal": r["ordinal"], "kind": r["kind"], "name": r["name"], "message_index": r["message_index"], "available": r["available"], "previous_analyses": r["previous_analyses"]} for r in registry], ensure_ascii=False, indent=2)
+        lines.append(f" [{r.get('ordinal')}] source_id={r.get('id')} artifact_id={r.get('id')} Type : {r.get('kind')} Nom : {r.get('name')} Tour d'origine : {r.get('message_index')} Disponible : {'oui' if r.get('available') else 'non'} {prev_str} Résumé : {prev[0]['summary'] if prev else ''}".strip())
+    return "\n".join(lines) + "\n\n" + json.dumps([{"id": r["id"], "artifact_id": r["id"], "ordinal": r["ordinal"], "kind": r["kind"], "name": r["name"], "message_index": r["message_index"], "available": r["available"], "previous_analyses": r["previous_analyses"]} for r in registry], ensure_ascii=False, indent=2)
 
 
-def _execute_vision(manager, tool_call: dict, image_paths: list[str] | None, request_id: str) -> dict:
-    """Exécute vision séquentiel via ModelManager (1 image, 32K, dense) — valide image_path vs image_paths fournis."""
+def _execute_vision(manager, tool_call: dict, image_paths: list[str] | None, request_id: str, attachment_ids: list[str] | None = None) -> dict:
+    """Exécute vision séquentiel via ModelManager — annexe 10 : privilégie artifact_id durable."""
     start = time.perf_counter()
     try:
         args = tool_call.get("args") or tool_call.get("arguments") or {}
-        query = args.get("query", "")
+        # Cadrage VLM : question autonome, sans déixis LLM ("la précédente image", ...).
+        # D'où vient la query sale : Phase 0 passe message[:500] brut, et l'orchestrateur LLM
+        # peut passer "revoit l'image" / "[doc_ocr(...)]" textuel. Où va la query propre :
+        # SYSTEM_VISION.format(query) + message user du VL, SANS historique (le VL n'a pas
+        # le contexte, par design — il ne voit qu'une image + une question).
+        try:
+            from backend.inference.media_policy import clean_media_query as _clean
+            query = _clean(args.get("query", ""))
+        except Exception:
+            query = args.get("query", "") or "Décris cette image en détail."
+        # Annexe 10 : artifact_id durable (cible), image_path compat déprécié
+        requested_artifact = args.get("artifact_id") or args.get("artifactId") or ""
         requested = args.get("image_path") or ""
-        # Validation : si le LLM hallucine un chemin hors /tmp/thot ou hors image_paths, fallback sur le vrai fichier fourni
+        # Si artifact_id demandé, résoudre via Blob
+        if requested_artifact:
+            try:
+                from backend.db.database import SessionLocal
+                from backend.db.models import Artifact, Blob
+                from backend.config.paths import get_data_dir
+                db = SessionLocal()
+                try:
+                    art = db.query(Artifact).filter(Artifact.id == requested_artifact).first()
+                    if art:
+                        blob = db.query(Blob).filter(Blob.id == art.blob_id).first()
+                        if blob:
+                            data_dir = get_data_dir()
+                            cand = data_dir / blob.relative_path
+                            if cand.exists():
+                                requested = str(cand)
+                            else:
+                                # Fallback staged : cherche fichier par hash prefix (toute extension)
+                                from backend.config.paths import get_temp_dir
+                                staged_dir = get_temp_dir() / "staged"
+                                for entry in staged_dir.iterdir():
+                                    if entry.name.startswith(blob.sha256):
+                                        requested = str(entry)
+                                        break
+                finally:
+                    try: db.close()
+                    except: pass
+            except Exception as e:
+                log(f"[vision] resolve artifact failed: {e}")
+        # Fallback : si attachment_ids fournis par run, construire valid_paths depuis blobs
+        valid_from_artifacts: list[str] = []
+        if attachment_ids:
+            try:
+                from backend.db.database import SessionLocal as _SL
+                from backend.db.models import Artifact as _Art, Blob as _Blob
+                from backend.config.paths import get_data_dir as _gdd
+                _db = _SL()
+                try:
+                    for aid in attachment_ids:
+                        art = _db.query(_Art).filter(_Art.id == aid).first()
+                        if art:
+                            blob = _db.query(_Blob).filter(_Blob.id == art.blob_id).first()
+                            if blob:
+                                p = _gdd() / blob.relative_path
+                                if p.exists():
+                                    valid_from_artifacts.append(str(p))
+                finally:
+                    try: _db.close()
+                    except: pass
+            except Exception:
+                pass
+        # Validation : si le LLM hallucine un chemin hors zone autorisée, fallback sur le vrai fichier fourni (annexe 10 : artifact_id)
         # Évite la hallucination vue dans conv.png : image_path='/tmp/thot/bea62abc-...png' flat qui n'existe pas
-        valid_paths = [p for p in (image_paths or []) if p and Path(p).exists()]
+        valid_paths = [p for p in (image_paths or []) if p and Path(p).exists()] + valid_from_artifacts
         if requested and valid_paths:
             # Vérifie que le chemin demandé est exactement l'un des vrais fichiers fournis
             if requested not in valid_paths:
@@ -385,8 +608,36 @@ def _execute_doc_ocr(manager, tool_call: dict, request_id: str) -> dict:
     start = time.perf_counter()
     try:
         args = tool_call.get("args") or tool_call.get("arguments") or {}
+        # Annexe 10 : artifact_id durable accepté comme vision (routage déterministe)
+        requested_artifact = args.get("artifact_id") or args.get("artifactId") or ""
         pdf_path = args.get("pdf_path") or args.get("image_path", "")
-        query = args.get("query", "")
+        # Cadrage OCR : même nettoyage déictique que vision
+        try:
+            from backend.inference.media_policy import clean_media_query as _cleanO
+            query = _cleanO(args.get("query", ""))
+        except Exception:
+            query = args.get("query", "")
+        if requested_artifact and (not pdf_path or not Path(pdf_path).exists()):
+            try:
+                from backend.db.database import SessionLocal as _SLO
+                from backend.db.models import Artifact as _ArtO, Blob as _BlobO
+                from backend.config.paths import get_data_dir as _gddO
+                _db = _SLO()
+                try:
+                    _art = _db.query(_ArtO).filter(_ArtO.id == requested_artifact).first()
+                    if _art is not None:
+                        _blob = _db.query(_BlobO).filter(_BlobO.id == _art.blob_id).first()
+                        if _blob is not None:
+                            _cand = _gddO() / _blob.relative_path
+                            if _cand.exists():
+                                pdf_path = str(_cand)
+                finally:
+                    try:
+                        _db.close()
+                    except Exception:
+                        pass
+            except Exception as e:
+                log(f"[doc_ocr] resolve artifact failed: {e}")
         ocr_task = resolve_ocr_task(query)
         system_prompt = build_system_ocr(task=ocr_task)
         if not pdf_path or not Path(pdf_path).exists():
@@ -438,26 +689,57 @@ def _execute_doc_ocr(manager, tool_call: dict, request_id: str) -> dict:
     except Exception as e:
         return {"ok": False, "result": f"[Erreur doc_ocr: {e}]", "latency_ms": int((time.perf_counter() - start) * 1000)}
 
-def _execute_get_source(tool_call: dict) -> dict:
+def _execute_get_source(tool_call: dict, conv_id: str | None = None) -> dict:
     start = time.perf_counter()
     try:
         args = tool_call.get("args") or tool_call.get("arguments") or {}
         source_id = args.get("source_id")
+        # R3 : sans source_id = lister TOUS les fichiers liés à la conversation
         if not source_id:
-            return {"ok": False, "result": "[get_source: source_id manquant]", "latency_ms": int((time.perf_counter() - start)*1000)}
+            if not conv_id:
+                return {"ok": False, "result": "[get_source: source_id manquant et conversation inconnue]", "latency_ms": int((time.perf_counter() - start)*1000)}
+            try:
+                entries = build_history_artifact_entries(conv_id)
+                legacy = build_attachment_registry(conv_id, None)
+                seen = {e.get("id") for e in entries}
+                for r in legacy or []:
+                    if r.get("id") not in seen:
+                        entries.append(r)
+                import json as _json
+                compact = [{"id": e.get("id"), "kind": e.get("kind"), "name": e.get("name"), "message_index": e.get("message_index"), "available": e.get("available")} for e in entries[:50]]
+                return {"ok": True, "result": f"Fichiers liés à la conversation ({len(entries)}) : " + _json.dumps(compact, ensure_ascii=False), "latency_ms": int((time.perf_counter() - start)*1000)}
+            except Exception as e:
+                return {"ok": False, "result": f"[get_source list-all: {e}]", "latency_ms": int((time.perf_counter() - start)*1000)}
         from backend.db.database import SessionLocal
         from backend.db.models import Source
+        from backend.config.paths import get_data_dir
+        from backend.db.media_cache import get_media_root
         db = SessionLocal()
         try:
+            # Annexe 10 : le registre annonce source_id=art_xxx → résout Artifact d'abord
+            try:
+                from backend.db.models import Artifact as _ArtGS, Blob as _BlobGS
+                _art = db.query(_ArtGS).filter(_ArtGS.id == source_id).first()
+                if _art is not None:
+                    _blob = db.query(_BlobGS).filter(_BlobGS.id == _art.blob_id).first()
+                    if _blob is not None:
+                        _data_dir = get_data_dir()
+                        _cand = _data_dir / _blob.relative_path
+                        if _cand.exists():
+                            return {"ok": True, "result": f'{{"source_id":"{_art.id}","working_path":"{_cand}","media_kind":"{_art.kind}","name":"{_art.original_filename}"}}', "latency_ms": int((time.perf_counter() - start)*1000)}
+            except Exception:
+                pass
             src = db.get(Source, source_id)
             if not src:
                 return {"ok": False, "result": f"[get_source: {source_id} introuvable]", "latency_ms": int((time.perf_counter() - start)*1000)}
             working_path = None
             if src.relative_path:
-                media_root = Path.home() / ".local" / "share" / "thot"
-                cand = media_root / src.relative_path
-                if cand.exists():
-                    working_path = str(cand)
+                # Portable : data_dir / relative_path, puis media_root
+                data_dir = get_data_dir()
+                for cand in [data_dir / src.relative_path, get_media_root() / Path(src.relative_path).name, get_media_root() / src.relative_path, Path.home() / ".local" / "share" / "thot" / src.relative_path]:
+                    if cand.exists():
+                        working_path = str(cand)
+                        break
             if not working_path and src.path and Path(src.path).exists():
                 working_path = src.path
             if not working_path:
@@ -479,17 +761,36 @@ def _execute_read_text(tool_call: dict) -> dict:
             return {"ok": False, "result": "[read_text: source_id manquant]", "latency_ms": int((time.perf_counter() - start)*1000)}
         from backend.db.database import SessionLocal
         from backend.db.models import Source
+        from backend.config.paths import get_data_dir
+        from backend.db.media_cache import get_media_root
         db = SessionLocal()
         try:
+            # Annexe 10 : résout Artifact d'abord (registre annonce art_xxx)
+            try:
+                from backend.db.models import Artifact as _ArtRT, Blob as _BlobRT
+                _art = db.query(_ArtRT).filter(_ArtRT.id == source_id).first()
+                if _art is not None:
+                    _blob = db.query(_BlobRT).filter(_BlobRT.id == _art.blob_id).first()
+                    if _blob is not None:
+                        _cand = get_data_dir() / _blob.relative_path
+                        if _cand.exists():
+                            text = _cand.read_text(encoding="utf-8", errors="replace")
+                            if len(text) > max_chars:
+                                text = text[:max_chars] + "\n[Tronqué]"
+                            return {"ok": True, "result": text, "latency_ms": int((time.perf_counter() - start)*1000)}
+                        return {"ok": False, "result": "[read_text: working_path introuvable]", "latency_ms": int((time.perf_counter() - start)*1000)}
+            except Exception:
+                pass
             src = db.get(Source, source_id)
             if not src:
                 return {"ok": False, "result": f"[read_text: {source_id} introuvable]", "latency_ms": int((time.perf_counter() - start)*1000)}
             working_path = None
             if src.relative_path:
-                media_root = Path.home() / ".local" / "share" / "thot"
-                cand = media_root / src.relative_path
-                if cand.exists():
-                    working_path = str(cand)
+                data_dir = get_data_dir()
+                for cand in [data_dir / src.relative_path, get_media_root() / Path(src.relative_path).name, get_media_root() / src.relative_path, Path.home() / ".local" / "share" / "thot" / src.relative_path]:
+                    if cand.exists():
+                        working_path = str(cand)
+                        break
             if not working_path and src.path and Path(src.path).exists():
                 working_path = src.path
             if not working_path:
@@ -505,6 +806,9 @@ def _execute_read_text(tool_call: dict) -> dict:
         return {"ok": False, "result": f"[read_text: {e}]", "latency_ms": int((time.perf_counter() - start)*1000)}
 
 
+def _check_cancel(cancel_flag) -> bool:
+    return bool(cancel_flag and cancel_flag.is_set())
+
 def run_agent_loop(
     manager,
     conv_id: str,
@@ -513,6 +817,8 @@ def run_agent_loop(
     mode: str,
     image_paths: list[str] | None,
     history_shared: list[dict],
+    cancel_flag=None,
+    attachment_ids: list[str] | None = None,
 ):
     """
     Boucle 2 couches Phase 1 : orchestrator → brief → générateur.
@@ -534,11 +840,89 @@ def run_agent_loop(
     history = list(history_shared) if history_shared else []
     assert isinstance(history, list), "history_shared doit être une liste"
 
-    # Registre d'images pour l'orchestrateur (Réponses.md n°8) — remplace routeur mots-clés
-    attachment_registry = build_attachment_registry(conv_id, image_paths)
+    # Compaction non-destructive C06 : prune avant figeage SharedContext
+    try:
+        from backend.inference.compaction import prune_old_tool_results
+        history = prune_old_tool_results(history)
+    except Exception:
+        pass
+
+    # Registre d'images pour l'orchestrateur (Réponses.md n°8 / annexe 10) — artifact_ids durables cible
+    if attachment_ids:
+        # Construit registre depuis Artifact durables (annexe 10)
+        try:
+            from backend.db.database import SessionLocal as _SL2
+            from backend.db.models import Artifact, Blob
+            _db = _SL2()
+            attachment_registry = []
+            for i, art_id in enumerate(attachment_ids):
+                art = _db.query(Artifact).filter(Artifact.id == art_id).first()
+                if not art:
+                    continue
+                blob = _db.query(Blob).filter(Blob.id == art.blob_id).first()
+                # Vérifie disponibilité du fichier sur disque
+                abs_available = False
+                if blob and blob.relative_path:
+                    try:
+                        from backend.config.paths import get_data_dir
+                        data_dir = get_data_dir()
+                        abs_available = (data_dir / blob.relative_path).exists()
+                    except Exception:
+                        pass
+                # Schéma IMPOSÉ identique à build_attachment_registry (Source legacy) : "id",
+                # "ordinal", "name", "message_index", "available", "previous_analyses". Pourquoi :
+                # format_attachment_registry() fait des accès directs r["id"] → tout autre
+                # schéma = KeyError: 'id' = toast 'Erreur' + réponse vide (bug q-r.md 08/09).
+                attachment_registry.append({
+                    "id": art_id,
+                    "ordinal": i + 1,
+                    "index": i + 1,
+                    "kind": art.kind,
+                    "name": art.original_filename or art.display_name or f"artifact_{i+1}",
+                    "path": blob.relative_path if blob else "",
+                    "first_seen_in_message": "current",
+                    "message_index": 1,
+                    "available": abs_available,
+                    "previous_analyses": [],
+                })
+            _db.close()
+            # Historique : artefacts des tours précédents (follow-ups sans nouveaux fichiers)
+            try:
+                current_ids = {e.get("id") for e in attachment_registry if e.get("id")}
+                for h in build_history_artifact_entries(conv_id, exclude_ids=current_ids):
+                    h["ordinal"] = len(attachment_registry) + 1
+                    h["index"] = len(attachment_registry) + 1
+                    attachment_registry.append(h)
+            except Exception as e:
+                log(f"[registry] history merge failed: {e}")
+            # Fallback image_paths si registry vide (compat)
+            if not attachment_registry and image_paths:
+                attachment_registry = build_attachment_registry(conv_id, image_paths)
+        except Exception as e:
+            log(f"[registry] artifact build failed: {e}")
+            attachment_registry = build_attachment_registry(conv_id, image_paths)
+    else:
+        attachment_registry = build_attachment_registry(conv_id, image_paths)
+        # Follow-up sans nouveaux fichiers : remonte les artefacts durables de la conv
+        if not attachment_registry:
+            try:
+                for h in build_history_artifact_entries(conv_id):
+                    h["ordinal"] = len(attachment_registry) + 1
+                    h["index"] = len(attachment_registry) + 1
+                    attachment_registry.append(h)
+            except Exception as e:
+                log(f"[registry] history merge failed: {e}")
     has_any_media = bool(attachment_registry)
     registry = get_default_registry()
     tool_defs = registry.definitions() if has_any_media else []
+
+    # SharedContext C03 : même base versionnée pour orchestrateur et générateur
+    revision = len(history) + 1  # simple compteur, valide la compaction
+    shared_ctx = SharedContext(conversation_id=conv_id, revision=revision, history=history, registry=attachment_registry, message=message)
+    # Vérifie annulation avant même de commencer
+    if _check_cancel(cancel_flag):
+        emit("run.cancelled", {"request_id": request_id, "run_id": run_id, "conversation_id": conv_id})
+        return ""
     # Execution plan basé sur registre (observabilité sémantique, pas lexicale)
     if attachment_registry:
         first = attachment_registry[0]
@@ -557,12 +941,73 @@ def run_agent_loop(
         if valid_cnt == 0:
             emit("error", {"request_id": request_id, "code": "image_paths_invalid", "message": "Aucun fichier joint valide trouvé"})
     tool_observations: list[str] = []
+    # Cache déterministe : (tool, artifact_id) -> result. D'où vient le besoin : si la
+    # Phase 0 a déjà observé art_X et que l'orchestrateur LLM redemande vision(art_X), on
+    # rejoue le résultat au lieu de recharger le VL (2s + bascule VRAM). Pourquoi clé sans
+    # la query : même image = mêmes pixels ; une nouvelle question sur la même image reste
+    # servie par la 1re observation (limite connue, préférable au coût d'un 2e passage).
+    deterministic_cache: dict[tuple[str, str], dict] = {}
+
+    # ========== Phase 0 : Routage déterministe média (sans LLM) ==========
+    # D'OÙ VIENT L'IDÉE : le function-calling natif du GGUF 8B est défaillant (template non
+    # reconnu → [vision(...)] textuel au lieu de tool_call, cf. logs INVALID_DECISION).
+    # OÙ VONT LES RÉSULTATS : tool_results + tool_observations alimentent la Phase 2
+    # (générateur) via obs_block, ET l'orchestrateur Phase 1 les voit dans son historique —
+    # donc même si le LLM comprend, il n'a plus besoin d'appeler.
+    # POURQUOI AVANT L'ORCHESTRATEUR : l'observation visuelle est un fait (pixels), pas une
+    # décision ; la confier au maillon le moins fiable (8B) causait les "pas accès".
+    # Le LLM orchestrateur garde la main pour le brief + get_source/read_text.
+    # RÈGLE MÉMOIRE : un seul modèle en VRAM à la fois (manager.use_model) → les exécutions
+    # sont strictement séquentielles, max MAX_ITER, avec allers 8B<->VL assumés.
+    try:
+        _current_entries = [e for e in attachment_registry if e.get("first_seen_in_message") == "current"]
+        _history_entries = [e for e in attachment_registry if e.get("first_seen_in_message") != "current"]
+        _plan = plan_media_tools(message, _current_entries)
+        if not _plan:
+            try:
+                from backend.inference.media_policy import decide_reinspection as _decide
+                _dec = _decide(message, _current_entries, _history_entries or attachment_registry, asks_for_text_extraction)
+            except Exception as e:
+                log(f"[deterministic] decide failed: {e}")
+                _dec = None
+            if _dec is not None:
+                _plan = [_dec]
+        for _item in _plan[:MAX_ITER]:
+            if _check_cancel(cancel_flag):
+                break
+            _tool = _item["tool"]
+            _aid = _item["artifact_id"]
+            _tcall_id = f"det_{_tool}_{_aid[:12] if len(_aid) > 12 else _aid}"
+            emit("tool_call", {"request_id": request_id, "tool_call_id": _tcall_id, "tool": _tool, "arguments": {"artifact_id": _aid, "query": message[:500]}})
+            _res: dict | None = None
+            for _attempt in range(MAX_RETRY + 1):
+                if _tool == "vision":
+                    _res = _execute_vision(manager, {"args": {"artifact_id": _aid, "query": message[:500]}}, image_paths, request_id, attachment_ids)
+                else:
+                    _res = _execute_doc_ocr(manager, {"args": {"artifact_id": _aid, "query": message[:500]}}, request_id)
+                if _res is not None and (_res.get("ok") or _attempt >= MAX_RETRY):
+                    break
+                time.sleep(0.5)
+            if _res is None:
+                _res = {"ok": False, "result": f"[Routage déterministe: {_tool} sans résultat]", "latency_ms": 0}
+            emit("tool_result", {"request_id": request_id, "tool_call_id": _tcall_id, "result": _res.get("result", "")[:5000], "ok": _res.get("ok", False), "latency_ms": _res.get("latency_ms", 0)})
+            tool_results.append({"tool": _tool, "result": _res.get("result", ""), "ok": _res.get("ok", False), "tool_call_id": _tcall_id})
+            tool_observations.append(_format_tool_observation(_tool, _res, _item.get("name") or _aid))
+            if _res.get("ok"):
+                deterministic_cache[(_tool, _aid)] = _res
+        if _plan:
+            _names = ", ".join(f"{p['tool']}({p['artifact_id'][:16]})" for p in _plan)
+            emit("execution_plan", {"request_id": request_id, "attachment_kind": (attachment_registry[0].get("kind") if attachment_registry else None), "intent": "media_available", "selected_tool": _plan[0]["tool"], "selected_model": "LFM2.5-VL-3B" if _plan[0]["tool"] == "vision" else "GLM-OCR", "reason": f"Routage déterministe (function-calling 8B non fiable) : {_names}"})
+    except Exception as e:
+        log(f"[deterministic] pre-execution failed: {e}")
 
     try:
         # ========== Phase 1 : Orchestrateur (décision sémantique, pas mots-clés) ==========
         user_content = message
-        if image_paths:
-            user_content += f"\n\n[Fichiers joints — utilise EXACTEMENT ces chemins pour vision/doc_ocr, ne les invente pas: {', '.join(image_paths)}]"
+        if attachment_ids:
+            user_content += f"\n\n[Fichiers joints — IDs durables annexe 10, utilise artifact_id pour vision/doc_ocr: {', '.join(attachment_ids)}]"
+        elif image_paths:
+            user_content += f"\n\n[Fichiers joints — compat image_paths déprécié, préfère attachment_ids: {', '.join(image_paths)}]"
 
         # Injection registre comme bloc système avant historique (spec n°8)
         registry_block = format_attachment_registry(attachment_registry)
@@ -571,6 +1016,9 @@ def run_agent_loop(
 
         orchestrator_done = False
         for iteration in range(MAX_ITER):
+            if _check_cancel(cancel_flag):
+                emit("run.cancelled", {"request_id": request_id, "run_id": run_id, "conversation_id": conv_id})
+                break
             if time.perf_counter() - t0 > TOTAL_TIMEOUT:
                 emit("error", {"request_id": request_id, "code": "total_timeout", "message": "300s dépassé"})
                 break
@@ -595,17 +1043,14 @@ def run_agent_loop(
             content = msg.get("content") or ""
             tool_calls = msg.get("tool_calls") or []
 
-            # --- Sanitizer backend (ticket #23852) : strip <think> et détection tool textuel ---
-            textual_calls = _detect_textual_tool_calls(content) if content else []
-            if textual_calls and not tool_calls:
-                # Le modèle a émis [vision(...)] en texte au lieu de tool_calls structurés → convertir
-                tool_calls = textual_calls
+            # --- Sanitizer annexe 10 Lot 1 : jamais de [vision(...)] textuel, jamais de pensée privée diffusée ---
+            if content and "[vision" in content.lower():
+                log("[INVALID_DECISION] stripping [vision(...)] textuel (annexe 10)")
                 content = _strip_textual_tool_calls(content)
-            # Nettoie le contenu de toute fuite <think> / préfixe anglais
+            # Nettoie le contenu de toute fuite <think> / préfixe anglais — ne pas ré-émettre (C05)
             clean_content, extracted_thinking = _sanitize_content(content)
             if extracted_thinking:
-                # Émet la pensée extraite comme thinking pour ne pas la perdre
-                emit("thinking", {"request_id": request_id, "text": extracted_thinking, "iteration": iteration})
+                log(f"[sanitizer] thinking stripped ({len(extracted_thinking)} chars) — non diffusé (C05)")
                 content = clean_content
 
             if not tool_calls:
@@ -628,14 +1073,26 @@ def run_agent_loop(
             emit("tool_call", {"request_id": request_id, "tool_call_id": tool_call_id, "tool": tool_name, "arguments": args})
 
             # Exécution avec retry 1x (vision/doc_ocr/get_source/read_text)
+            # Cache déterministe : si le LLM redemande un artefact déjà observé ce tour, réutilise
             result: dict | None = None
+            _cache_key = None
+            if tool_name in ("vision", "doc_ocr"):
+                _aid = args.get("artifact_id") or args.get("artifactId") or ""
+                if _aid:
+                    _cache_key = (tool_name, _aid)
+                    _cached = deterministic_cache.get(_cache_key)
+                    if _cached is not None and _cached.get("ok"):
+                        result = dict(_cached)
+                        result["tool_call_id"] = tool_call_id
             for attempt in range(MAX_RETRY + 1):
+                if result is not None:
+                    break
                 if tool_name == "vision":
-                    result = _execute_vision(manager, {"args": args}, image_paths, request_id)
+                    result = _execute_vision(manager, {"args": args}, image_paths, request_id, attachment_ids)
                 elif tool_name == "doc_ocr":
                     result = _execute_doc_ocr(manager, {"args": args}, request_id)
                 elif tool_name == "get_source":
-                    result = _execute_get_source({"args": args})
+                    result = _execute_get_source({"args": args}, conv_id=conv_id)
                 elif tool_name == "read_text":
                     result = _execute_read_text({"args": args})
                 else:

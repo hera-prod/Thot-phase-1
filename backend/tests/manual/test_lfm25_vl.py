@@ -2,8 +2,22 @@
 import base64
 from pathlib import Path
 
+import pytest
+
+# Poids + mmproj VL ≈ 2.5 Go + contexte : exige de la VRAM réellement libre.
+# Si l'app tourne à côté (8B résident ≈ 9 Go), le test est SKIPpé — pas FAILED :
+# deux processus qui se battent pour un GPU n'est pas un verdict sur le code.
+MIN_FREE_VRAM_MB = 6000
+
+
 def test_lfm25_vl():
     from backend.inference.manager import ModelManager
+    try:
+        free_mb = ModelManager()._get_free_vram_mb()
+    except Exception:
+        free_mb = 0
+    if free_mb < MIN_FREE_VRAM_MB:
+        pytest.skip(f"VRAM insuffisante pour le smoke test ({free_mb} Mo libres, {MIN_FREE_VRAM_MB} requis — fermez l'app)")
     from backend.inference.loop import prepare_vision_image
 
     # Crée une image test 64x64 rouge si pas de fixture

@@ -1,12 +1,16 @@
-"""Cache média persistant — Réponses.md n°7 : ~/.local/share/thot/media/{sha256}.ext"""
+"""Cache média persistant — Réponses.md n°7 : data/blobs/{sha256}.ext (portable) ou ~/.local/share/thot/media"""
 from pathlib import Path
 import shutil
 import hashlib
 import mimetypes
 
 def get_media_root() -> Path:
-    # Tauri app_data_dir = ~/.local/share/thot sur Linux
-    return Path.home() / ".local" / "share" / "thot" / "media"
+    """Racine blobs : portable data/blobs si portable_strict, sinon XDG thot/media."""
+    try:
+        from backend.config.paths import get_media_dir  # type: ignore
+        return get_media_dir()
+    except Exception:
+        return Path.home() / ".local" / "share" / "thot" / "media"
 
 def persist_attachment(tmp_path: str) -> tuple[str, str, int]:
     """Copie /tmp/thot/{req}/{hash}.ext -> media/{hash}.ext, retourne (relative_path, sha256, size)."""

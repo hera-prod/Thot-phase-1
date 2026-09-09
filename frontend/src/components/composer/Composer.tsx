@@ -1,6 +1,6 @@
 // Composer Phase 1 — adapté hash+path (save_upload), plus de base64
 // Fichiers via AttachmentDraftProvider partagé (ChatHome + ChatConversation)
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import {
   Add24Regular, Send24Regular, Mic24Regular,
   Square24Regular, Attach24Regular, Globe24Regular,
@@ -9,6 +9,7 @@ import {
 import { useAttachmentDraft } from '../../features/attachments/AttachmentDraftContext';
 import { validateAttachments } from '../../features/attachments/attachmentValidation';
 import { showToast } from '../ui/Toast';
+import { convertFileSrc } from "@tauri-apps/api/core";
 import './Composer.css';
 
 interface DroppedFile {
@@ -27,7 +28,13 @@ export function Composer({ variant, isGenerating, onSend, onStop }: ComposerProp
   const [message, setMessage] = useState('');
   const [showTools, setShowTools] = useState(false);
   const { attachments, addFiles, removeAttachment, clearAttachments, isDraggingFiles, setDraggingFiles } = useAttachmentDraft();
-  const droppedFiles: DroppedFile[] = attachments.map((a) => ({ file: a.file, previewUrl: a.previewUrl ?? '' }));
+  const droppedFiles: DroppedFile[] = attachments.map((a) => {
+    let preview = a.previewUrl ?? '';
+    if (!preview && a.stagedPath) {
+      try { preview = convertFileSrc(a.stagedPath); } catch { preview = ''; }
+    }
+    return { file: a.file, previewUrl: preview };
+  });
   const [isDraggingOverComposer, setIsDraggingOverComposer] = useState(false);
   const isDraggingGlobal = isDraggingFiles;
   const dragCounterRef = useRef(0);
@@ -50,37 +57,215 @@ export function Composer({ variant, isGenerating, onSend, onStop }: ComposerProp
     }
   };
 
-  // Voile global + highlight Composer (spec Réponses.md P1) + fallback Tauri natif (P0 n°6)
+  // Machine à états annexe 09 §3 : Repos / Glisser détecté / Ciblage / Hors cible / Refus / Résolu
+  // Source unique = onDragDropEvent natif (dragDropEnabled) + repli HTML5 (OLE exclusif Windows §2)
+  const [dragUiState, setDragUiState] = useState<'repos'|'glisser_detecte'|'ciblage'|'hors_cible'|'refus'>('repos');
+  const [dragFeedback, setDragFeedback] = useState<string>('');
+  const [dragLive, setDragLive] = useState<string>('');
+  const lastOverRef = useRef<number>(0);
+
+  const isInsideComposer = useCallback((x: number, y: number) => {
+    const el = containerRef.current;
+    if (!el) return false;
+    const r = el.getBoundingClientRect();
+    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+  }, []);
+
+  const validateHover = useCallback((pathsOrFiles: Array<{ name: string; size?: number }>): { ok: boolean; reason?: string } => {
+    if (pathsOrFiles.length > 4) return { ok: false, reason: `Trop de fichiers (${pathsOrFiles.length}/4 max)` };
+    for (const f of pathsOrFiles) {
+      const name = f.name.toLowerCase();
+      const isPdf = name.endsWith('.pdf');
+      const isImg = name.endsWith('.png') || name.endsWith('.jpg') || name.endsWith('.jpeg') || name.endsWith('.webp');
+      if (!isPdf && !isImg) return { ok: false, reason: `Type non pris en charge : ${f.name} (PNG/JPG/WEBP/PDF)` };
+      if (f.size && isImg && f.size > 5*1024*1024) return { ok: false, reason: `${f.name} >5 Mo` };
+      if (f.size && f.size > 20*1024*1024) return { ok: false, reason: `${f.name} >20 Mo` };
+    }
+    return { ok: true };
+  }, []);
+
   useEffect(() => {
-    const onWindowDragEnter = (e: DragEvent) => { if (e.dataTransfer?.types.includes("Files")) setDraggingFiles(true); };
-    const onWindowDragLeave = (e: DragEvent) => { if (e.relatedTarget === null) setDraggingFiles(false); };
-    const onWindowDragOver = (e: DragEvent) => { if (e.dataTransfer?.types.includes("Files")) e.preventDefault(); };
-    const onWindowDrop = (e: DragEvent) => { if (e.dataTransfer?.types.includes("Files")) e.preventDefault(); setDraggingFiles(false); setIsDraggingOverComposer(false); };
+    const onWindowDragEnter = (e: DragEvent) => {
+      if (!e.dataTransfer?.types.includes("Files")) return;
+      e.preventDefault();
+      setDraggingFiles(true);
+      setDragUiState('glisser_detecte');
+      setDragFeedback('Déposez vos fichiers ici — PNG/JPG/WEBP/PDF, 4 max');
+      setDragLive('Dépôt possible : glissez vers la barre de saisie');
+    };
+    const onWindowDragLeave = (e: DragEvent) => {
+      if (e.relatedTarget === null) {
+        setDraggingFiles(false);
+        setIsDraggingOverComposer(false);
+        setDragUiState('repos');
+        setDragFeedback('');
+        setDragLive('');
+      }
+    };
+    const onWindowDragOver = (e: DragEvent) => {
+      if (!e.dataTransfer?.types.includes("Files")) return;
+      e.preventDefault();
+      // Throttle rafale §3 (quelques centaines ms, sans retarder drop)
+      const now = Date.now();
+      if (now - lastOverRef.current < 120) return;
+      lastOverRef.current = now;
+      const inside = isInsideComposer(e.clientX, e.clientY);
+      // Pré-validation hover §5 (extensions visibles)
+      const items = Array.from(e.dataTransfer.items ?? []).map(i => ({ name: (i as unknown as { getAsFile?: () => File }).getAsFile?.()?.name ?? 'fichier' }));
+      // Fallback si items vides : utilise types
+      const mock = items.length ? items : [{ name: 'fichier.png' }];
+      const v = items.length ? validateHover(mock as unknown as Array<{name:string}>) : { ok: true };
+      if (!v.ok) {
+        setDragUiState('refus');
+        setDragFeedback(v.reason ?? 'Type non pris en charge');
+        setDraggingFiles(true);
+        setIsDraggingOverComposer(inside);
+        return;
+      }
+      if (inside) {
+        setDragUiState('ciblage');
+        setDragFeedback('Déposez ici pour joindre');
+      } else {
+        setDragUiState('hors_cible');
+        setDragFeedback('Déposez dans la barre de saisie');
+      }
+      setDraggingFiles(true);
+      setIsDraggingOverComposer(inside);
+    };
+    const onWindowDrop = (e: DragEvent) => {
+      if (!e.dataTransfer?.types.includes("Files")) return;
+      e.preventDefault();
+      setDraggingFiles(false);
+      setIsDraggingOverComposer(false);
+      setDragUiState('repos');
+      setDragFeedback('');
+      // Le drop effectif est traité par handleDrop du composer (même pipeline validation C12)
+    };
     window.addEventListener("dragenter", onWindowDragEnter);
     window.addEventListener("dragleave", onWindowDragLeave);
     window.addEventListener("dragover", onWindowDragOver);
     window.addEventListener("drop", onWindowDrop);
-    // Fallback Tauri natif (quand HTML5 File[] non reçu) — staging Rust si disponible
+
+    // Natif Tauri : source unique §3, position en pixels physiques §1
     let unlisten: (() => void) | undefined;
-    import("@tauri-apps/api/webviewWindow").then(({ getCurrentWebviewWindow }) => {
-      getCurrentWebviewWindow().onDragDropEvent((event) => {
-        if ((event as unknown as { payload: { type: string } }).payload?.type !== "drop") return;
-        lastNativeDropRef.current = Date.now();
-        const paths = (event as unknown as { payload: { paths: string[] } }).payload.paths ?? [];
-        // Si Rust stage_dropped_files existe, l'appeler ; sinon log
-        import("@tauri-apps/api/core").then(({ invoke }) => {
-          invoke("stage_dropped_files", { paths, draftId: "global" }).then((staged: unknown) => {
-            const arr = staged as Array<{ stagedPath: string; name: string; mime: string }>;
-            if (Array.isArray(arr) && arr.length) {
-              showToast({ type: "success", title: "Fichiers reçus (Tauri)", message: `${arr.length} fichier(s)` });
+    let scaleFactor = window.devicePixelRatio || 1;
+    import("@tauri-apps/api/webviewWindow").then(async ({ getCurrentWebviewWindow }) => {
+      try { scaleFactor = await getCurrentWebviewWindow().scaleFactor(); } catch {}
+      const win = getCurrentWebviewWindow();
+      win.onDragDropEvent(async (event) => {
+        const payload = (event as unknown as { payload: { type: string; position?: { x:number; y:number }; paths?: string[] } }).payload;
+        const t = payload.type as 'enter'|'over'|'leave'|'drop'|'cancel';
+        const now = Date.now();
+        if (t === 'over' && now - lastOverRef.current < 120) return; // dedup rafale §3
+        if (t === 'over') lastOverRef.current = now;
+
+        if (t === 'enter') {
+          setDraggingFiles(true);
+          setDragUiState('glisser_detecte');
+          setDragFeedback('Déposez vos fichiers ici');
+          setDragLive('Dépôt possible');
+          return;
+        }
+        if (t === 'over') {
+          const pos = payload.position;
+          let inside = false;
+          if (pos) {
+            const logical = { x: pos.x / scaleFactor, y: pos.y / scaleFactor };
+            inside = isInsideComposer(logical.x, logical.y);
+          }
+          const paths = payload.paths ?? [];
+          const v = validateHover(paths.map(p => ({ name: p })));
+          if (!v.ok) {
+            setDragUiState('refus');
+            setDragFeedback(v.reason ?? 'Refus : type ou taille non conforme');
+            setDraggingFiles(true);
+            setIsDraggingOverComposer(inside);
+            return;
+          }
+          setDraggingFiles(true);
+          setIsDraggingOverComposer(inside);
+          setDragUiState(inside ? 'ciblage' : 'hors_cible');
+          setDragFeedback(inside ? 'Déposez ici pour joindre' : 'Glissez vers la barre de saisie');
+          return;
+        }
+        if (t === 'leave' || t === 'cancel') {
+          setDraggingFiles(false);
+          setIsDraggingOverComposer(false);
+          setDragUiState('repos');
+          setDragFeedback('');
+          setDragLive('');
+          return;
+        }
+        if (t === 'drop') {
+          lastNativeDropRef.current = Date.now();
+          const paths = payload.paths ?? [];
+          // Pré-validation §5 avant staging
+          const v = validateHover(paths.map(p => ({ name: p })));
+          if (!v.ok) {
+            showToast({ type: 'error', title: 'Dépôt refusé', message: v.reason ?? 'Type non pris en charge' });
+            setDraggingFiles(false);
+            setIsDraggingOverComposer(false);
+            setDragUiState('repos');
+            return;
+          }
+          setDragUiState('repos');
+          // Staging Rust annexe 10 : même forme pour drag/trombone → stage_dropped_paths
+          try {
+            const { stageDroppedPaths } = await import("../../lib/tauri");
+            const requestId = crypto.randomUUID();
+            const resp = await stageDroppedPaths(requestId, paths);
+            // resp = {stageId, items:[{stageItemId, filename, mimeDetected, preview:{token}}], rejected}
+            if (resp.rejected.length) {
+              const msgs = resp.rejected.map(r => r.message).join(', ');
+              showToast({ type: 'error', title: 'Fichiers rejetés', message: msgs });
             }
-          }).catch(() => {
-            // Pas de commande Rust encore — fallback : paths déjà loggés, HTML5 reste prioritaire
-            console.debug("[Composer] Tauri drop paths", paths);
-          });
-        }).catch(() => {});
+            if (resp.items.length) {
+              // Convertit StagingItem → File avec vrais bytes pour preview (annexe 10 vignette)
+              const stagedFiles: File[] = [];
+              for (const it of resp.items) {
+                try {
+                  let file: File;
+                  try {
+                    const { invoke } = await import("@tauri-apps/api/core");
+                    const bytes = await invoke<number[]>("get_staged_preview_bytes", { path: it.preview?.token ?? "" });
+                    const blob = new Blob([new Uint8Array(bytes)], { type: it.mimeDetected });
+                    file = new File([blob], it.filename, { type: it.mimeDetected });
+                  } catch {
+                    // Fallback si preview bytes non dispo (browser) → placeholder
+                    const blob = new Blob([], { type: it.mimeDetected });
+                    file = new File([blob], it.filename, { type: it.mimeDetected });
+                    Object.defineProperty(file, 'size', { value: it.sizeBytes, writable: false });
+                  }
+                  (file as unknown as Record<string, unknown>)._stagedPath = it.preview?.token ?? "";
+                  (file as unknown as Record<string, unknown>)._stageItemId = it.stageItemId;
+                  (file as unknown as Record<string, unknown>)._previewToken = it.preview?.token;
+                  stagedFiles.push(file);
+                } catch {}
+              }
+              if (stagedFiles.length) {
+                const { validateAttachments } = await import("../../features/attachments/attachmentValidation");
+                const res = validateAttachments(stagedFiles);
+                if (res.errors.length) showToast({ type: 'error', title: 'Fichiers ignorés', message: res.errors.join(', ') });
+                if (res.files.length) {
+                  window.dispatchEvent(new CustomEvent('thot:add-files', { detail: res.files }));
+                  const details = res.warnings.length ? ` - ${res.warnings.join(', ')}` : '';
+                  setDragLive(`${res.files.length} fichier(s) importé(s)${details}`);
+                  showToast({ type: 'success', title: res.warnings.length ? 'Fichiers reçus (redimensionnés)' : 'Fichiers reçus', message: `${res.files.length} fichier(s)${details}` });
+                }
+              }
+            }
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            showToast({ type: 'error', title: 'Dépôt refusé', message: msg });
+            setDragLive(`Refus : ${msg}`);
+            console.debug("[Composer] Tauri drop error", e);
+          }
+          setDraggingFiles(false);
+          setIsDraggingOverComposer(false);
+        }
       }).then((fn) => { unlisten = fn; }).catch(() => {});
     }).catch(() => {});
+
     return () => {
       window.removeEventListener("dragenter", onWindowDragEnter);
       window.removeEventListener("dragleave", onWindowDragLeave);
@@ -88,7 +273,7 @@ export function Composer({ variant, isGenerating, onSend, onStop }: ComposerProp
       window.removeEventListener("drop", onWindowDrop);
       if (unlisten) unlisten();
     };
-  }, [setDraggingFiles]);
+  }, [setDraggingFiles, isInsideComposer, validateHover]);
 
   const handleDragEnter = (e: React.DragEvent) => {
     e.preventDefault();
@@ -117,14 +302,20 @@ export function Composer({ variant, isGenerating, onSend, onStop }: ComposerProp
 
   const processFiles = (files: FileList | File[]) => {
     const arr = Array.from(files);
-    const { files: accepted, errors } = validateAttachments(arr);
-    if (errors.length > 0) showToast({ type: 'error', title: 'Fichiers ignores', message: errors.join(', ') });
-    if (accepted.length > 0) addFiles(accepted);
+    const { files: accepted, errors, warnings } = validateAttachments(arr);
+    if (errors.length > 0) showToast({ type: 'error', title: 'Fichiers ignorés', message: errors.join(', ') });
+    if (accepted.length > 0) {
+      const details = warnings.length ? ` - ${warnings.join(', ')}` : '';
+      showToast({ type: 'success', title: warnings.length ? 'Fichiers reçus (redimensionnés)' : 'Fichiers reçus', message: `${accepted.length} fichier(s)${details}` });
+      addFiles(accepted);
+    }
   };
 
   const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
+    // Annexe 09 §2 : dragDropEnabled natif exclusif Windows → HTML5 inactif en Tauri, évite 3×
+    if (typeof window !== 'undefined' && (window as unknown as { __TAURI__?: unknown }).__TAURI__) return;
     if (Date.now() - lastNativeDropRef.current < 250) return; // dedup Tauri natif
     dragCounterRef.current = 0;
     setIsDraggingOverComposer(false);
@@ -173,14 +364,24 @@ export function Composer({ variant, isGenerating, onSend, onStop }: ComposerProp
     minHeight: variant === 'docked' ? 56 : undefined,
   };
 
-  // Voile d'ambiance page (en-dehors Composer) — spec Réponses.md
-  const showPageAmbient = isDraggingGlobal && !isDraggingOverComposer;
+  // Voile d'ambiance page (en-dehors Composer) — annexe 09 §3
+  // Repos / glisser_detecte / ciblage / hors_cible / refus / resolu
+  const showPageAmbient = dragUiState === 'glisser_detecte' || dragUiState === 'hors_cible';
+  const isRefus = dragUiState === 'refus';
+  const isCiblage = dragUiState === 'ciblage';
 
   return (
     <>
+      {/* Live region accessibilité §4 : annonce état dépôt, résultat après drop */}
+      <div aria-live="polite" aria-atomic="true" style={{ position: 'absolute', width: 1, height: 1, overflow: 'hidden', clip: 'rect(0 0 0 0)' }}>{dragLive}</div>
       {showPageAmbient && (
         <div className="pageDragAmbientOverlay" aria-hidden="true">
-          <div className="pageDragHint">Déposez votre fichier dans la barre de saisie</div>
+          <div className="pageDragHint">{dragFeedback || 'Déposez vos fichiers ici'}</div>
+        </div>
+      )}
+      {isRefus && (
+        <div className="pageDragAmbientOverlay pageDragAmbientRefus" aria-hidden="true">
+          <div className="pageDragHint pageDragHintRefus">{dragFeedback || 'Type non pris en charge — PNG/JPG/WEBP/PDF, 4 max, 5 Mo image / 20 Mo PDF'}</div>
         </div>
       )}
       <div
@@ -257,12 +458,18 @@ export function Composer({ variant, isGenerating, onSend, onStop }: ComposerProp
         </div>
       )}
 
-      {/* Main input row — animated shell */}
-      <div className={`composerShell ${isDraggingGlobal ? "composerShellAmbientHighlight" : ""} ${isDraggingOverComposer ? "composerShellActiveDrop" : ""}`} style={wrapperStyle}>
-        {isDraggingOverComposer && (
+      {/* Main input row — animated shell : annexe 09 §3 pulsation vs statique si reduced-motion */}
+      <div className={`composerShell ${isDraggingGlobal && !isRefus ? "composerShellAmbientHighlight" : ""} ${isCiblage ? "composerShellActiveDrop" : ""} ${isRefus ? "composerShellRefus" : ""}`} style={wrapperStyle} aria-dropeffect={isCiblage ? "copy" : isRefus ? "none" : undefined}>
+        {isCiblage && (
           <div className="composerDropOverlay">
             <span className="composerDropIcon">＋</span>
-            <span className="composerDropLabel">Déposez ici pour joindre</span>
+            <span className="composerDropLabel">{dragFeedback || 'Déposez ici pour joindre'}</span>
+          </div>
+        )}
+        {isRefus && isDraggingOverComposer && (
+          <div className="composerDropOverlay composerDropOverlayRefus" aria-live="polite">
+            <span className="composerDropIcon">✕</span>
+            <span className="composerDropLabel">{dragFeedback}</span>
           </div>
         )}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>

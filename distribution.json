@@ -1,0 +1,12 @@
+{
+  "product": "Thot Phase 1",
+  "version": "1.0.0",
+  "phase": 1,
+  "target": "x86_64-unknown-linux-gnu",
+  "sidecar": "thot-sidecar-x86_64-unknown-linux-gnu",
+  "data_layout": "data/database, data/blobs, data/logs, data/temp, data/backups",
+  "portable": true,
+  "models_included": false,
+  "checksums": {},
+  "build_date": "2026-09-07"
+}

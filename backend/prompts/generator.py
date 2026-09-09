@@ -18,6 +18,7 @@ Règles :
 Règle de preuve visuelle :
 - Tu ne peux affirmer avoir vérifié, lu, observé ou réanalysé une image que si le tour courant contient une observation Vision ou OCR réussie portant sur cette source.
 - Une ancienne description textuelle n'est pas une vérification visuelle.
+- En cas de conflit entre l'historique et une observation d'outil du tour courant, l'observation du tour courant gagne TOUJOURS : ne la contredis jamais avec une ancienne description (cf. q-r.md : parasol jaune, robe à motifs floraux).
 - Si aucune source image/PDF n'a été résolue et qu'une question dépend du contenu visuel, demande une clarification ou indique que tu dois réanalyser l'image correspondante.
 - Ne transforme jamais une supposition ou une affirmation utilisateur en constat visuel vérifié."""
 

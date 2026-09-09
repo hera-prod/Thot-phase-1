@@ -26,8 +26,19 @@ else:
     try:
         from backend.config.paths import resolve_data_dir  # type: ignore
         _data_dir = resolve_data_dir(None)
-        DB_PATH = str(_data_dir / "thot-phase-1.db")
-        log.info(f"DB_PATH from resolve_data_dir: {DB_PATH}")
+        # Nouveau contrat portable : data/database/thot-phase-1.db ; legacy : data/thot-phase-1.db
+        new_path = _data_dir / "database" / "thot-phase-1.db"
+        legacy_path = _data_dir / "thot-phase-1.db"
+        if new_path.exists():
+            DB_PATH = str(new_path)
+            log.info(f"DB_PATH from resolve_data_dir (new): {DB_PATH}")
+        elif legacy_path.exists():
+            DB_PATH = str(legacy_path)
+            log.info(f"DB_PATH from resolve_data_dir (legacy): {DB_PATH}")
+        else:
+            # Par défaut : nouveau chemin (database/)
+            DB_PATH = str(new_path)
+            log.info(f"DB_PATH from resolve_data_dir (default new): {DB_PATH}")
     except Exception:
         DB_PATH = os.path.join(os.path.dirname(__file__), "../../data/thot-phase-1.db")
         log.warning(f"DB_PATH fallback (no resolve_data_dir): {DB_PATH}")

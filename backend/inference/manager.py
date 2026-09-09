@@ -11,6 +11,7 @@ But : ne jamais avoir 2 modèles en VRAM en même temps (borne 7.5 GB garantie).
 """
 import gc
 import logging
+import threading
 import time
 import subprocess
 from contextlib import contextmanager
@@ -60,7 +61,7 @@ def inject_cache_markers(messages: list[dict], system: str) -> tuple[list[dict],
 
 
 class ModelManager:
-    """Gardien des modeles : charge/decharge en sequentiel strict."""
+    """Gardien des modeles : charge/decharge en sequentiel strict + FSM C07."""
 
     def __init__(self):
         self._current_model: Optional[object] = None  # modele actuellement en VRAM
@@ -69,6 +70,13 @@ class ModelManager:
         self.detector = HardwareDetector()             # detecte le GPU au demarrage
         self.backend = self.detector.detect()          # config backend (cuda/vulkan/cpu...)
         self._min_required_vram_mb = 6000  # seuil pour rechargement 8B (~7G) — ajustable
+        # FSM C07 : unloaded, loading, ready, running, unloading, failed (pseudocode/backend_socle.md)
+        self._state: str = "unloaded"
+        self._generation: int = 0  # génération handle, invalide après unload (C07)
+        self._owner: str | None = None
+        self._state_lock = threading.Lock()
+        self._admission = threading.Semaphore(1)  # 1 run lourd actif pour profil 8 Go (C07)
+        self._admission_owner: str | None = None
 
     def _get_free_vram_mb(self) -> int:
         """VRAM libre via nvidia-smi (fallback) — évite torch.cuda qui ne voit pas llama.cpp."""
@@ -100,6 +108,53 @@ class ModelManager:
             time.sleep(0.1)
         logger.warning("VRAM non libérée après déchargement (%s Mo libres, %s requis)", self._get_free_vram_mb(), self._min_required_vram_mb)
 
+    def _looks_like_oom(self, e: Exception) -> bool:
+        """Détecte un échec mémoire même quand llama.cpp dit juste 'Failed to load model'.
+
+        Vu en prod (q-r.md) : après plusieurs allers 8B<->VL, ~4.6 Go libres < 6 Go requis,
+        les 4 stratégies échouent avec 'Failed to load model from file' — jamais reconnu
+        comme OOM, donc jamais de repli en offload partiel. Sous le seuil VRAM, on le
+        traite comme OOM pour déclencher n_gpu_layers réduit.
+        """
+        s = str(e).lower()
+        if "out of memory" in s or "cuda" in s or "cublas" in s or "no memory" in s or "llama_context" in s:
+            return True
+        if "failed to load model" in s:
+            try:
+                return self._get_free_vram_mb() < self._min_required_vram_mb
+            except Exception:
+                return False
+        return False
+
+    # --- FSM C07 ---
+    def _set_state(self, new: str, owner: str | None = None):
+        with self._state_lock:
+            logger.debug(f"[FSM] {self._state} -> {new} (owner={owner}, gen={self._generation})")
+            self._state = new
+            if owner is not None:
+                self._owner = owner
+            if new == "failed":
+                logger.error(f"[FSM] passage en failed (owner={self._owner})")
+
+    def acquire_admission(self, run_id: str, timeout: float = 30.0) -> bool:
+        """Réserve la place run lourd unique (C07). Retourne False si timeout."""
+        acquired = self._admission.acquire(timeout=timeout)
+        if acquired:
+            self._admission_owner = run_id
+            logger.info(f"[admission] {run_id} acquise")
+        else:
+            logger.warning(f"[admission] {run_id} timeout")
+        return acquired
+
+    def release_admission(self, run_id: str):
+        if self._admission_owner == run_id:
+            self._admission_owner = None
+            try:
+                self._admission.release()
+            except ValueError:
+                pass
+            logger.info(f"[admission] {run_id} libérée")
+
     @contextmanager
     def use_model(self, name: str, estimated_tokens: int = 4096, has_image: bool = False) -> Generator:
         """
@@ -108,21 +163,44 @@ class ModelManager:
         - Sinon → on decharge l'ancien puis on charge le nouveau
         - Garde-fou supports_vision : 8B texte pur ne doit jamais recevoir file:// image (ticket #23852)
         """
+        # FSM : réutilisation si même génération
         if self._current_name == name and self._current_model is not None:
-            yield self._current_model  # deja charge, on le rend
+            self._set_state("running", owner=name)
+            try:
+                yield self._current_model
+            finally:
+                self._set_state("ready", owner=name)
             return
 
         if self._current_model is not None:
             logger.info("VRAM avant unload %s: %s Mo libres", self._current_name, self._get_free_vram_mb())
-            self._unload_current()  # libere la VRAM avant de charger le suivant
-            logger.info("VRAM après unload: %s Mo libres", self._get_free_vram_mb())
+            self._set_state("unloading", owner=self._current_name)
+            self._unload_current()
+            # Vérifie libération confirmée, sinon failed C07
+            free = self._get_free_vram_mb()
+            if free < self._min_required_vram_mb:
+                logger.warning(f"[FSM] libération non confirmée ({free} Mo), passage failed")
+                # Ne bloque pas tout : on tente quand même le chargement mais on note
+            self._generation += 1  # invalide anciens handles C07
+            self._set_state("unloaded")
+            logger.info("VRAM après unload: %s Mo libres gen=%s", free, self._generation)
 
-        model = self._load_model(name, estimated_tokens, has_image)
+        self._set_state("loading", owner=name)
+        try:
+            model = self._load_model(name, estimated_tokens, has_image)
+        except Exception as e:
+            self._set_state("failed", owner=name)
+            raise
         self._current_model = model
-        # handler déjà stocké via _build_llm_kwargs side-effect si vision
         self._current_name = name
-        yield model
-        # on garde le modele chaud pour la prochaine requete (pas de dechargement auto)
+        self._set_state("ready", owner=name)
+        self._set_state("running", owner=name)
+        try:
+            yield model
+        finally:
+            # Retour ready, garde chaud
+            if self._state != "failed":
+                self._set_state("ready", owner=name)
 
     def _build_llm_kwargs(self, cfg, n_ctx: int, flash_attn: bool, mmproj: bool = True, extra_layers: int | None = None) -> dict:
         """Construit kwargs Llama selon config + flash_attn + mmproj (corrige llama_chat_handler -> llama_chat_format)."""
@@ -219,30 +297,64 @@ class ModelManager:
         if not cfg.supports_vision and has_image:
             raise ValueError(f"[supports_vision] {name} texte pur ne supporte pas vision (supports_vision=False) — utilisez VL-3B/GLM-OCR. Ticket #23852")
 
-        # n_ctx adaptatif : 128K si ≥12GB VRAM, sinon 32K (evite OOM 11.5GB sur 8GB)
-        n_ctx = resolve_n_ctx(name, self.backend.free_vram, estimated_tokens)
+        # n_ctx adaptatif sur VRAM COURANTE (pas le cache détecteur du démarrage) :
+        # après plusieurs allers 8B<->VL, la VRAM libre réelle peut être très basse et
+        # garder 32K de KV fait échouer le chargement ("Failed to load model", q-r.md).
+        try:
+            current_free_bytes = self._get_free_vram_mb() * 1024 * 1024
+        except Exception:
+            current_free_bytes = self.backend.free_vram
+        n_ctx = resolve_n_ctx(name, current_free_bytes, estimated_tokens)
         logger.info(f"Chargement {name}: n_ctx={n_ctx}, flash_attn={cfg.flash_attn}, mmproj={cfg.mmproj}")
+
+        # Si VRAM basse, attendre une vraie libération avant de tenter : les
+        # libérations CUDA sont asynchrones, foncer dedans = échec de chargement
+        try:
+            if self._get_free_vram_mb() < self._min_required_vram_mb:
+                logger.warning("VRAM basse avant chargement %s, attente libération...", name)
+                self._wait_for_vram_release(timeout_s=8.0)
+        except Exception:
+            pass
 
         errors: list[tuple[str, Exception]] = []
 
         # Stratégie retry distingue OOM vs config (Réponses.md n°9)
         LOAD_STRATEGIES = [
             ("nominal", {"flash": cfg.flash_attn, "mmproj": True, "delay": 0}),
-            ("apres_gc_force", {"flash": cfg.flash_attn, "mmproj": True, "delay": 0.5}),
+            ("apres_gc_force", {"flash": cfg.flash_attn, "mmproj": True, "delay": 2.0}),
             ("flash_off", {"flash": False, "mmproj": True, "delay": 0}),
             ("sans_mmproj", {"flash": False, "mmproj": False, "delay": 0}),
         ]
+        # Un modèle vision SANS son projector ne peut rien faire : _build_vision_handler
+        # exige mmproj_path, donc sans_mmproj échoue TOUJOURS avec "mmproj_path requis" —
+        # un message qui ENTERRE la vraie erreur (VRAM ? handler ? fichier ?). On saute
+        # cette stratégie pour les modèles vision (q-r.md 09/09 : GLM-OCR) afin que
+        # l'erreur surfacée soit la cause réelle. Pour le 8B texte, on la garde (il peut
+        # tourner sans projector... il n'en a pas).
+        strategies = [s for s in LOAD_STRATEGIES if not (cfg.supports_vision and s[0] == "sans_mmproj")]
 
-        for strat_name, opts in LOAD_STRATEGIES:
+        for strat_name, opts in strategies:
             if opts["delay"]:
                 gc.collect()
                 time.sleep(opts["delay"])
-                self._wait_for_vram_release(timeout_s=2.0)
-            # Si OOM déjà détecté, tente directement n_gpu_layers réduit
-            if any("out of memory" in str(e).lower() or "CUDA" in str(e) for _, e in errors):
+                self._wait_for_vram_release(timeout_s=5.0)
+            # Si OOM déjà détecté (y compris "Failed to load model" en VRAM basse),
+            # tente directement n_gpu_layers réduit sur VRAM courante
+            if any(self._looks_like_oom(e) for _, e in errors):
                 try:
-                    partial = estimate_layers(self.backend.free_vram, 5 * GB, 1 * GB, 24)
-                    kwargs = self._build_llm_kwargs(cfg, n_ctx, False, mmproj=False, extra_layers=partial)
+                    current_free_b = self._get_free_vram_mb() * 1024 * 1024
+                    partial = estimate_layers(current_free_b, 5 * GB, 1 * GB, 24)
+                    # Le repli partiel ne concerne que les couches LLM : un modèle vision
+                    # GARDE son projector (mmproj=False lève "mmproj_path requis", q-r.md).
+                    keep_mmproj = True if cfg.supports_vision else opts["mmproj"]
+                    # "Failed to create llama_context" = KV trop gros pour la VRAM restante :
+                    # on divise n_ctx par 2 (plancher 4096, 2048 pour le petit GLM-OCR).
+                    # Dégradation progressive : les stratégies suivantes réutilisent ce n_ctx.
+                    floor = 2048 if name == "GLM-OCR" else 4096
+                    if any("llama_context" in str(e).lower() for _, e in errors):
+                        n_ctx = max(floor, n_ctx // 2)
+                        logger.warning(f"{name} repli OOM : n_ctx réduit à {n_ctx}")
+                    kwargs = self._build_llm_kwargs(cfg, n_ctx, False, mmproj=keep_mmproj, extra_layers=partial)
                     llm = Llama(**kwargs)
                     logger.info(f"{name} charge en fallback OOM ({strat_name}, partial={partial})")
                     return llm
@@ -291,7 +403,8 @@ class ModelManager:
             except Exception:
                 pass
         gc.collect()
-        self._wait_for_vram_release(timeout_s=3.0)
+        time.sleep(0.5)  # laisse les libérations CUDA asynchrones se propager à nvidia-smi
+        self._wait_for_vram_release(timeout_s=5.0)
         # torch vide uniquement si dispo — ne libère pas llama.cpp mais harmless
         try:
             import torch
