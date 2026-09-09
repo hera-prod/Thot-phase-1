@@ -694,7 +694,8 @@ def _execute_get_source(tool_call: dict, conv_id: str | None = None) -> dict:
     try:
         args = tool_call.get("args") or tool_call.get("arguments") or {}
         source_id = args.get("source_id")
-        # R3 : sans source_id = lister TOUS les fichiers liés à la conversation
+        # Annexe 11 Lot A : get_source = compat LIMITÉE (plus de catalogue complet).
+        # Sans source_id : 20 fichiers récents max + renvoi vers search_documents.
         if not source_id:
             if not conv_id:
                 return {"ok": False, "result": "[get_source: source_id manquant et conversation inconnue]", "latency_ms": int((time.perf_counter() - start)*1000)}
@@ -706,8 +707,13 @@ def _execute_get_source(tool_call: dict, conv_id: str | None = None) -> dict:
                     if r.get("id") not in seen:
                         entries.append(r)
                 import json as _json
-                compact = [{"id": e.get("id"), "kind": e.get("kind"), "name": e.get("name"), "message_index": e.get("message_index"), "available": e.get("available")} for e in entries[:50]]
-                return {"ok": True, "result": f"Fichiers liés à la conversation ({len(entries)}) : " + _json.dumps(compact, ensure_ascii=False), "latency_ms": int((time.perf_counter() - start)*1000)}
+                # Récents d'abord (message_index desc), borné à 20 — jamais le catalogue entier
+                entries.sort(key=lambda e: (e.get("message_index") or 0), reverse=True)
+                compact = [{"id": e.get("id"), "kind": e.get("kind"), "name": e.get("name"), "message_index": e.get("message_index"), "available": e.get("available")} for e in entries[:20]]
+                hint = ""
+                if len(entries) > 20:
+                    hint = f" … et {len(entries) - 20} autre(s). Pour retrouver un fichier précis, utilise search_documents."
+                return {"ok": True, "result": f"Fichiers récents de la conversation ({len(entries)}) : " + _json.dumps(compact, ensure_ascii=False) + hint, "latency_ms": int((time.perf_counter() - start)*1000)}
             except Exception as e:
                 return {"ok": False, "result": f"[get_source list-all: {e}]", "latency_ms": int((time.perf_counter() - start)*1000)}
         from backend.db.database import SessionLocal
@@ -717,34 +723,60 @@ def _execute_get_source(tool_call: dict, conv_id: str | None = None) -> dict:
         db = SessionLocal()
         try:
             # Annexe 10 : le registre annonce source_id=art_xxx → résout Artifact d'abord
+            # Annexe 11 Lot A : scope-check AVANT lecture + métadonnées SANS working_path
+            # (le chemin reste privé aux exécuteurs vision/ocr/read ; jamais au LLM).
             try:
                 from backend.db.models import Artifact as _ArtGS, Blob as _BlobGS
+                from backend.search import scope as _scopeGS, cards as _cardsGS
                 _art = db.query(_ArtGS).filter(_ArtGS.id == source_id).first()
                 if _art is not None:
+                    _allowed = _scopeGS.resolve_allowed_artifacts(conv_id) if conv_id else {_art.id}
+                    _denied = _scopeGS.check_artifact_scope(source_id, _allowed)
+                    if _denied is not None:
+                        return {"ok": False, "result": f"[{_denied['code']}: {_denied['message']}]", "latency_ms": int((time.perf_counter() - start)*1000)}
                     _blob = db.query(_BlobGS).filter(_BlobGS.id == _art.blob_id).first()
-                    if _blob is not None:
-                        _data_dir = get_data_dir()
-                        _cand = _data_dir / _blob.relative_path
-                        if _cand.exists():
-                            return {"ok": True, "result": f'{{"source_id":"{_art.id}","working_path":"{_cand}","media_kind":"{_art.kind}","name":"{_art.original_filename}"}}', "latency_ms": int((time.perf_counter() - start)*1000)}
+                    _available = False
+                    _size = _blob.size_bytes if _blob is not None else None
+                    try:
+                        from backend.config.paths import get_data_dir as _gddGS
+                        if _blob is not None:
+                            _available = (_gddGS() / _blob.relative_path).exists()
+                    except Exception:
+                        pass
+                    _card = _cardsGS.get_current_card(db, _art.id)
+                    import json as _jsonGS
+                    _meta = {
+                        "artifact_id": _art.id,
+                        "kind": _art.kind,
+                        "name": _art.original_filename or _art.display_name,
+                        "size_bytes": _size,
+                        "available": bool(_available),
+                        "card": {"revision": int(_card.revision or 0) if _card else 0,
+                                 "summary": (_card.summary if _card else "") or "",
+                                 "status": ((_card.analysis_status or _card.status) if _card else "pending")},
+                        "available_actions": (["vision", "doc_ocr"] if (_art.kind == "image") else
+                                              ["read_text", "doc_ocr"] if (_art.kind == "pdf") else
+                                              ["read_text"]),
+                    }
+                    return {"ok": True, "result": _jsonGS.dumps(_meta, ensure_ascii=False), "latency_ms": int((time.perf_counter() - start)*1000)}
             except Exception:
                 pass
             src = db.get(Source, source_id)
             if not src:
                 return {"ok": False, "result": f"[get_source: {source_id} introuvable]", "latency_ms": int((time.perf_counter() - start)*1000)}
-            working_path = None
+            # Legacy Source : métadonnées SANS chemin (annexe 11 — jamais de working_path au LLM).
+            # La résolution privée du fichier reste dans _execute_vision/_execute_doc_ocr/_execute_read_text.
+            _available_src = False
             if src.relative_path:
-                # Portable : data_dir / relative_path, puis media_root
                 data_dir = get_data_dir()
                 for cand in [data_dir / src.relative_path, get_media_root() / Path(src.relative_path).name, get_media_root() / src.relative_path, Path.home() / ".local" / "share" / "thot" / src.relative_path]:
                     if cand.exists():
-                        working_path = str(cand)
+                        _available_src = True
                         break
-            if not working_path and src.path and Path(src.path).exists():
-                working_path = src.path
-            if not working_path:
-                return {"ok": False, "result": "[get_source: working_path introuvable]", "latency_ms": int((time.perf_counter() - start)*1000)}
-            return {"ok": True, "result": f'{{"source_id":"{src.id}","working_path":"{working_path}","media_kind":"{src.media_kind}","name":"{src.original_name}"}}', "latency_ms": int((time.perf_counter() - start)*1000)}
+            if not _available_src and src.path and Path(src.path).exists():
+                _available_src = True
+            import json as _jsonSRC
+            return {"ok": True, "result": _jsonSRC.dumps({"source_id": src.id, "kind": src.media_kind, "name": src.original_name, "available": bool(_available_src)}, ensure_ascii=False), "latency_ms": int((time.perf_counter() - start)*1000)}
         finally:
             try: db.close()
             except: pass
@@ -808,6 +840,105 @@ def _execute_read_text(tool_call: dict) -> dict:
 
 def _check_cancel(cancel_flag) -> bool:
     return bool(cancel_flag and cancel_flag.is_set())
+
+
+# ---------- Annexe 11 Lot A : persistance observations + fiches + recherche ----------
+# D'OÙ VIENT CE BLOC : avant, les résultats d'outils ne vivaient qu'en mémoire du tour.
+# OÙ VA QUOI : _record_observation() après chaque exécution (Phase 0 + Phase 1),
+# _ensure_cards_for_registry() après construction du registre,
+# _execute_search_documents() comme 5e exécuteur.
+# POURQUOI ICI : un seul point d'appel, jamais bloquant (la DB ne casse pas le tour).
+
+def _record_observation(tool_name: str, artifact_id: str, query: str | None,
+                        result: dict, run_id: str, tool_call_id: str,
+                        model_id: str | None = None) -> None:
+    """Persiste Observation immuable + révise la fiche N+1. Ne lève jamais."""
+    try:
+        if not artifact_id:
+            return  # list-all / search : pas d'analyse mono-fichier, rien à persister
+        from backend.search import observations as _obsmod
+        _obsmod.record_tool_observation(
+            artifact_id, tool_name, query, (result or {}).get("result", ""),
+            bool((result or {}).get("ok")),
+            run_id=run_id, tool_call_id=tool_call_id, model_id=model_id,
+            latency_ms=int((result or {}).get("latency_ms", 0) or 0))
+    except Exception as e:
+        log(f"[observation] record failed: {e}")
+
+
+def _ensure_cards_for_registry(conv_id: str, attachment_registry: list | None) -> None:
+    """Self-healing fiches : garantit fiche rev 1 + index pour chaque id du registre."""
+    try:
+        ids = [e.get("id") for e in (attachment_registry or []) if isinstance(e, dict) and e.get("id")]
+        ids = list(dict.fromkeys(ids))
+        if not ids:
+            return
+        from backend.db.database import SessionLocal as _SLC
+        from backend.db.models import Artifact as _ArtC
+        from backend.search import cards as _cards, fts as _ftsm
+        db = _SLC()
+        try:
+            _ftsm.ensure_fts(db)
+            for aid in ids:
+                try:
+                    art = db.query(_ArtC).filter(_ArtC.id == aid).first()
+                    if art is not None:
+                        _cards.ensure_card_on_import(db, art)
+                except Exception:
+                    continue
+            db.commit()
+        finally:
+            try:
+                db.close()
+            except Exception:
+                pass
+    except Exception as e:
+        log(f"[cards] ensure registry failed: {e}")
+
+
+def _execute_search_documents(tool_call: dict, conv_id: str | None = None) -> dict:
+    """Exécuteur search_documents : scope AVANT retrieval, page bornée, jamais de chemins."""
+    start = time.perf_counter()
+    try:
+        import json as _json
+        args = tool_call.get("args") or tool_call.get("arguments") or {}
+        query = (args.get("query") or "").strip()
+        scope = (args.get("scope") or "conversation").strip().lower()
+        if scope not in ("conversation",):
+            # Lot A : seul le scope conversation existe (espaces = Lot B)
+            return {"ok": False,
+                    "result": "[SEARCH_SCOPE_INVALID: scope 'workspace' non activé (Lot B)]",
+                    "latency_ms": int((time.perf_counter() - start) * 1000)}
+        if not conv_id:
+            return {"ok": False,
+                    "result": "[SEARCH_SCOPE_INVALID: conversation inconnue]",
+                    "latency_ms": int((time.perf_counter() - start) * 1000)}
+        from backend.search import scope as _scopemod, fts as _ftsmod
+        from backend.db.database import SessionLocal as _SLS
+        allowed = _scopemod.resolve_allowed_artifacts(conv_id)
+        db = _SLS()
+        try:
+            _ftsmod.ensure_fts(db)
+            page = _ftsmod.search(
+                db, query=query, scope_kind="conversation", scope_id=conv_id,
+                allowed_ids=allowed, types=args.get("types"),
+                status=args.get("status") or "any",
+                limit=args.get("limit") or 10, cursor=args.get("cursor"))
+        finally:
+            try:
+                db.close()
+            except Exception:
+                pass
+        if not page.get("ok"):
+            return {"ok": False,
+                    "result": f"[{page.get('code', 'SEARCH_ERROR')}: {page.get('message', '')}]",
+                    "latency_ms": int((time.perf_counter() - start) * 1000)}
+        return {"ok": True, "result": _json.dumps(page, ensure_ascii=False),
+                "latency_ms": int((time.perf_counter() - start) * 1000)}
+    except Exception as e:
+        return {"ok": False, "result": f"[search_documents: {e}]",
+                "latency_ms": int((time.perf_counter() - start) * 1000)}
+
 
 def run_agent_loop(
     manager,
@@ -914,7 +1045,20 @@ def run_agent_loop(
                 log(f"[registry] history merge failed: {e}")
     has_any_media = bool(attachment_registry)
     registry = get_default_registry()
-    tool_defs = registry.definitions() if has_any_media else []
+    # Annexe 11 Lot A : search_documents est dispo dès qu'un scope conversation existe
+    # (découverte SANS pièce jointe au tour courant : "retrouve la facture EDF") ;
+    # vision/doc_ocr/get_source/read_text seulement si média (courant ou historique).
+    _all_defs = registry.definitions()
+    if has_any_media:
+        tool_defs = _all_defs
+    else:
+        tool_defs = [d for d in _all_defs
+                     if isinstance(d, dict) and d.get("function", {}).get("name") == "search_documents"]
+    # Fiches garanties pour le registre (self-healing : Rust crée l'Artifact, Python assure la fiche)
+    try:
+        _ensure_cards_for_registry(conv_id, attachment_registry)
+    except Exception as e:
+        log(f"[cards] ensure failed: {e}")
 
     # SharedContext C03 : même base versionnée pour orchestrateur et générateur
     revision = len(history) + 1  # simple compteur, valide la compaction
@@ -993,6 +1137,9 @@ def run_agent_loop(
             emit("tool_result", {"request_id": request_id, "tool_call_id": _tcall_id, "result": _res.get("result", "")[:5000], "ok": _res.get("ok", False), "latency_ms": _res.get("latency_ms", 0)})
             tool_results.append({"tool": _tool, "result": _res.get("result", ""), "ok": _res.get("ok", False), "tool_call_id": _tcall_id})
             tool_observations.append(_format_tool_observation(_tool, _res, _item.get("name") or _aid))
+            # Annexe 11 Lot A : Observation persistée + fiche N+1 (revient au tour suivant)
+            _record_observation(_tool, _aid, message[:500], _res, run_id, _tcall_id,
+                                model_id="LFM2.5-VL-3B" if _tool == "vision" else "GLM-OCR")
             if _res.get("ok"):
                 deterministic_cache[(_tool, _aid)] = _res
         if _plan:
@@ -1095,6 +1242,8 @@ def run_agent_loop(
                     result = _execute_get_source({"args": args}, conv_id=conv_id)
                 elif tool_name == "read_text":
                     result = _execute_read_text({"args": args})
+                elif tool_name == "search_documents":
+                    result = _execute_search_documents({"args": args}, conv_id=conv_id)
                 else:
                     result = {"ok": False, "result": f"[Outil inconnu: {tool_name}]", "latency_ms": 0}
                 if result["ok"] or attempt >= MAX_RETRY:
@@ -1113,6 +1262,14 @@ def run_agent_loop(
             messages_orch.append({"role": "tool", "tool_call_id": tool_call_id, "content": result["result"]})
             tool_results.append({"tool": tool_name, "result": result["result"], "ok": result["ok"], "tool_call_id": tool_call_id})
             tool_observations.append(_format_tool_observation(tool_name, result, tool_name))
+            # Annexe 11 Lot A : Observation persistée + fiche N+1 (hors search : pas d'analyse mono-fichier)
+            try:
+                _aid1 = (args.get("artifact_id") or args.get("artifactId")
+                         or args.get("source_id") or "")
+                _record_observation(tool_name, _aid1, args.get("query") or args.get("purpose") or message[:500],
+                                    result, run_id, tool_call_id)
+            except Exception as e:
+                log(f"[observation] phase1 record failed: {e}")
 
             if len(tool_results) >= MAX_ITER:
                 brief = content.strip() if content.strip() else f"Synthèse nécessaire pour : {message}"

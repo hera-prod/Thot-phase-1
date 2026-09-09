@@ -151,28 +151,54 @@ class MessageAttachment(Base):
 
 
 class ArtifactCard(Base):
-    """Description courte réutilisable (annexe 10)."""
+    """Fiche révisable d'un artefact (annexe 10, étendue annexe 11 Lot A).
+
+    Une seule fiche active par artefact (is_current=1). Immuable par révision :
+    toute mise à jour crée N+1 et bascule le flag, jamais d'écrasement.
+    """
     __tablename__ = "artifact_cards"
-    id = Column(String, primary_key=True)
+    id = Column(String, primary_key=True)  # card_...
     artifact_id = Column(String, ForeignKey("artifacts.id", ondelete="CASCADE"), nullable=False)
-    revision = Column(Integer, default=0)
+    revision = Column(Integer, default=1)
+    is_current = Column(Integer, default=1)  # 1 = fiche active (unique par artefact)
+    # Contenu prudent (aide à la découverte, jamais preuve primaire)
+    title = Column(String, nullable=True)
     summary = Column(Text, nullable=True)
-    capabilities = Column(String, nullable=True)
-    quality = Column(String, nullable=True)
-    status = Column(String, default="available")
-    __table_args__ = (Index("idx_cards_artifact", "artifact_id"),)
+    keywords_json = Column(Text, nullable=True)  # liste normalisée JSON
+    entities_json = Column(Text, nullable=True)  # noms, lieux, projets, dates JSON
+    detected_language = Column(String, nullable=True)
+    document_type = Column(String, nullable=True)  # invoice, note, photo…
+    capabilities = Column(String, nullable=True)  # compat : miroir CSV de capabilities_json
+    capabilities_json = Column(Text, nullable=True)  # ["ocr", "text_search", "vision"]
+    quality = Column(String, nullable=True)  # compat annexe 10
+    status = Column(String, default="pending")  # compat : miroir de analysis_status
+    analysis_status = Column(String, default="pending")  # pending|indexed|partial|analysed|failed|stale
+    source_observation_id = Column(String, nullable=True)  # observation ayant produit cette révision
+    created_at = Column(DateTime, server_default=func.now())
+    superseded_at = Column(DateTime, nullable=True)
+    __table_args__ = (Index("idx_cards_artifact", "artifact_id"),
+                      Index("idx_cards_current_status", "is_current", "analysis_status", "document_type"),)
 
 
 class Observation(Base):
-    """Résultat structuré d'un outil (annexe 10)."""
+    """Résultat versionné d'un outil (annexe 10, étendue annexe 11 Lot A).
+
+    Immuable après écriture : toute nouvelle analyse = nouvelle ligne.
+    Réutilisable SSI même artefact + même sha + capacité compatible + question couverte.
+    """
     __tablename__ = "observations"
-    id = Column(String, primary_key=True)
+    id = Column(String, primary_key=True)  # obs_...
     artifact_id = Column(String, ForeignKey("artifacts.id", ondelete="CASCADE"), nullable=False)
-    tool_name = Column(String, nullable=False)
+    run_id = Column(String, nullable=True)
+    tool_call_id = Column(String, nullable=True)
+    tool_name = Column(String, nullable=False)  # vision|doc_ocr|read_text|get_source|search_documents
     tool_version = Column(String, nullable=True)
-    input_fingerprint = Column(String, nullable=True)
+    model_id = Column(String, nullable=True)
+    input_fingerprint = Column(String, nullable=True)  # sha(blob+outil+modèle+params+query)
     query = Column(Text, nullable=True)
-    status = Column(String, default="completed")
-    payload_ref = Column(Text, nullable=True)
+    status = Column(String, default="completed")  # completed|partial|failed|cancelled
+    result_json = Column(Text, nullable=True)  # extrait structuré borné (pour le prompt)
+    payload_ref = Column(Text, nullable=True)  # contenu de référence borné (hors prompt par défaut)
     created_at = Column(DateTime, server_default=func.now())
-    __table_args__ = (Index("idx_obs_artifact", "artifact_id"),)
+    __table_args__ = (Index("idx_obs_artifact", "artifact_id"),
+                      Index("idx_obs_artifact_created", "artifact_id", "created_at"),)

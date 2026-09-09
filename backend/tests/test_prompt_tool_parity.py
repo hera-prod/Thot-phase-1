@@ -56,4 +56,5 @@ def test_descriptions_outils_mentionnent_ids():
 
 
 def test_registre_4_outils():
-    assert set(get_default_registry().tool_names()) == {"vision", "doc_ocr", "get_source", "read_text"}
+    # Annexe 11 Lot A : 5e outil search_documents (découverte bornée)
+    assert set(get_default_registry().tool_names()) == {"vision", "doc_ocr", "get_source", "read_text", "search_documents"}

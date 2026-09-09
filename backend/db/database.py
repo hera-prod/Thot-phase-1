@@ -62,8 +62,106 @@ def _configure_sqlite(dbapi_connection: SQLite3Connection, _: object) -> None:
 
 
 def init_db():
-    """Crée les 4 tables si elles n'existent pas (appelé au démarrage du sidecar)."""
+    """Crée les tables si elles n'existent pas (appelé au démarrage du sidecar).
+
+    Annexe 11 Lot A : create_all ne rajoute PAS les colonnes aux tables existantes,
+    donc migration légère (ALTER TABLE ADD COLUMN si absente) + DDL FTS5 + index
+    complémentaires. Chaque étape est bornée en try/except : un index en conflit
+    ne doit jamais empêcher le démarrage.
+    """
     Base.metadata.create_all(bind=engine)
+    _migrate_search_columns()
+    _ensure_fts()
+
+
+# Colonnes annexe 11 Lot A : {table: [(colonne, type DDL)]}
+_SEARCH_MIGRATIONS: dict[str, list[tuple[str, str]]] = {
+    "artifact_cards": [
+        ("is_current", "INTEGER"),
+        ("title", "VARCHAR"),
+        ("keywords_json", "TEXT"),
+        ("entities_json", "TEXT"),
+        ("detected_language", "VARCHAR"),
+        ("document_type", "VARCHAR"),
+        ("capabilities_json", "TEXT"),
+        ("analysis_status", "VARCHAR"),
+        ("source_observation_id", "VARCHAR"),
+        ("created_at", "DATETIME"),
+        ("superseded_at", "DATETIME"),
+    ],
+    "observations": [
+        ("run_id", "VARCHAR"),
+        ("tool_call_id", "VARCHAR"),
+        ("model_id", "VARCHAR"),
+        ("result_json", "TEXT"),
+    ],
+}
+
+_FTS_DDL = """CREATE VIRTUAL TABLE IF NOT EXISTS artifact_search USING fts5(
+    artifact_id UNINDEXED,
+    scope_kind UNINDEXED,
+    scope_id UNINDEXED,
+    kind UNINDEXED,
+    card_revision UNINDEXED,
+    filename,
+    title,
+    summary,
+    keywords,
+    entities,
+    extracted_preview,
+    tokenize = 'unicode61 remove_diacritics 2'
+)"""
+
+_SEARCH_INDEXES = [
+    "CREATE INDEX IF NOT EXISTS idx_artifact_links_scope ON artifact_links(scope_kind, scope_id, removed_at, artifact_id)",
+    "CREATE INDEX IF NOT EXISTS idx_artifacts_kind ON artifacts(kind, deleted_at)",
+    "CREATE INDEX IF NOT EXISTS idx_cards_current_status ON artifact_cards(is_current, analysis_status, document_type)",
+    "CREATE INDEX IF NOT EXISTS idx_observations_artifact_created ON observations(artifact_id, created_at)",
+    # Une seule fiche active par artefact (les lignes legacy ont is_current NULL → exclues)
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_current_card_per_artifact ON artifact_cards(artifact_id) WHERE is_current = 1",
+]
+
+
+def _migrate_search_columns(target_engine=None) -> None:
+    """Ajoute les colonnes manquantes (idempotent, burntolerant aux conflits)."""
+    eng = target_engine if target_engine is not None else engine
+    try:
+        from sqlalchemy import text as _text
+        with eng.connect() as conn:
+            for table, cols in _SEARCH_MIGRATIONS.items():
+                try:
+                    existing = {row[1] for row in conn.execute(_text(f"PRAGMA table_info({table})")).fetchall()}
+                except Exception:
+                    continue
+                for name, ddl in cols:
+                    if name not in existing:
+                        try:
+                            conn.execute(_text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
+                        except Exception as e:
+                            log.warning(f"migration {table}.{name} ignorée: {e}")
+            conn.commit()
+    except Exception as e:
+        log.warning(f"migration search ignorée: {e}")
+
+
+def _ensure_fts(target_engine=None) -> None:
+    """Crée la table FTS5 + index complémentaires (idempotent)."""
+    eng = target_engine if target_engine is not None else engine
+    try:
+        from sqlalchemy import text as _text
+        with eng.connect() as conn:
+            try:
+                conn.execute(_text(_FTS_DDL))
+            except Exception as e:
+                log.warning(f"DDL FTS5 ignoré: {e}")
+            for stmt in _SEARCH_INDEXES:
+                try:
+                    conn.execute(_text(stmt))
+                except Exception as e:
+                    log.warning(f"index search ignoré ({stmt[:60]}…): {e}")
+            conn.commit()
+    except Exception as e:
+        log.warning(f"init FTS ignoré: {e}")
 
 
 def get_db():

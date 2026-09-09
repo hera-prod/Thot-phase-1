@@ -1,11 +1,11 @@
-# Tools — vision / doc_ocr / get_source / read_text
+# Tools — vision / doc_ocr / get_source / read_text / search_documents
 
 ## 1. Dossiers englobés
 
 ```
 backend/tools/
 ├── base.py              ← BaseTool.call (validation Pydantic, timeout 15s, max_output 8000)
-├── registry.py          ← build_default_registry() : 4 outils Phase 1
+├── registry.py          ← build_default_registry() : 5 outils (Phase 1 + search L11)
 ├── vision_general.py    ← VisionGeneralTool (artifact_id durable, image_path compat déprécié)
 ├── vision_ocr.py        ← VisionOCRTool / doc_ocr (GLM-OCR, resolve_ocr_task)
 ├── get_source.py        ← GetSourceTool (list-all SANS source_id, sinon détail 1 fichier)
@@ -19,8 +19,8 @@ Jamais depuis le frontend, jamais depuis Rust directement.
 
 ```
 # Registre — source de vérité des tool_defs injectés à l'orchestrateur
-registre = build_default_registry()  # vision + doc_ocr + get_source + read_text
-SI has_any_media : tool_defs = registre.definitions()  # sinon pas d'outils (mode chat pur)
+registre = build_default_registry()  # vision + doc_ocr + get_source + read_text + search_documents
+SI has_any_media : tool_defs = registre.definitions()  # les 5 (mode chat pur : search seul)
 
 # Appel — un seul outil par itération, séquentiel
 POUR chaque itération (max 5) :

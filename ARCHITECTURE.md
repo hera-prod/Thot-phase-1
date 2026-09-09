@@ -4,7 +4,7 @@
 
 ## 1. Objectif Phase 1 (figé)
 
-Chat seul + historique. Toolcalls VLM directs dans le chat (`vision` + `doc_ocr` + `get_source` + `read_text`).
+Chat seul + historique. Toolcalls VLM directs dans le chat (`vision` + `doc_ocr` + `get_source` + `read_text` + `search_documents` L11).
 Orchestrateur sémantique (LFM2.5-8B) décide via registry, jamais de `[vision(...)]` textuel.
 Backend 100% IPC, local portable, 1 modèle en VRAM à la fois.
 

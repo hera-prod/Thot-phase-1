@@ -156,7 +156,9 @@ def test_get_source_resout_artifact(tmp_repo):
     _seed_conv_with_artifact(TestSession, data_dir)
     res = L._execute_get_source({"args": {"source_id": "art_abc123def456"}})
     assert res["ok"] is True
-    assert "working_path" in res["result"]
+    # Annexe 11 Lot A : fiche métadonnées SANS working_path (chemin privé aux exécuteurs)
+    assert "working_path" not in res["result"]
+    assert "artifact_id" in res["result"] and "photo.png" in res["result"]
 
 
 def test_get_source_introuvable(tmp_repo):

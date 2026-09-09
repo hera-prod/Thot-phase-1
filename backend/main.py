@@ -109,6 +109,16 @@ def handle(normalized: dict):
                                 _dbp.flush()
                                 _dbp.add(ArtifactLink(id=f"lnk_{art_id[4:8]}_{request_id[:8]}", artifact_id=art_id, scope_kind="conversation", scope_id=conv_id if 'conv_id' in locals() else "tmp"))
                                 _dbp.commit()
+                                # Annexe 11 Lot A : fiche rev 1 dès la promotion (sinon self-healing au run)
+                                try:
+                                    from backend.search import cards as _cardsP, fts as _ftsP
+                                    _artP = _dbp.query(Artifact).filter(Artifact.id == art_id).first()
+                                    if _artP is not None:
+                                        _ftsP.ensure_fts(_dbp)
+                                        _cardsP.ensure_card_on_import(_dbp, _artP)
+                                        _dbp.commit()
+                                except Exception as _eP:
+                                    log(f"[compat] fiche Lot A ignorée {art_id}: {_eP}")
                             attachment_ids.append(f"art_{sha[:12]}")
                     except Exception as e:
                         log(f"[compat] promotion échouée {p}: {e}")

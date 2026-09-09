@@ -45,7 +45,8 @@ Phase 0 (sans modèle) :
 
 Tour orchestrateur (LFM2.5-8B, max 5 iter, timeout 15s/outil, 300s total) :
   messages = [SYSTEM_ORCHESTRATOR, SOURCES DISPONIBLES (registre), historique user↔assistant]
-  SI has_any_media → ajouter tool_defs (vision/doc_ocr/get_source/read_text)
+  SI has_any_media → ajouter tool_defs (vision/doc_ocr/get_source/read_text/search_documents ;
+    sans média : search_documents seul pour la découverte — annexe 11 Lot A)
   réponse = LLM.orchestrer(messages)
   SI réponse contient "[vision(...)]" textuel → INVALID_DECISION (jamais exécuté, sanitizer strip)
   SI tool_call structuré → exécuteur :

@@ -12,11 +12,12 @@ from pydantic import BaseModel, ValidationError
 
 
 class ToolContext(BaseModel):
-    """Contexte d'exécution injecté — run_id + chemins temporaires."""
+    """Contexte d'exécution injecté — run_id + chemins temporaires + scope annexe 11."""
 
     run_id: str
     request_id: str
     image_paths: list[str] = []  # /tmp/thot/{request_id}/{hash}.ext
+    conv_id: str | None = None  # scope effectif (search_documents, Lot A annexe 11)
 
 
 class ToolResult(BaseModel):
