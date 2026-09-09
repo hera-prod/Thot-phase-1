@@ -37,10 +37,18 @@ def tmp_repo(tmp_path, monkeypatch):
     db_file = tmp_path / "test.db"
     engine = create_engine(f"sqlite:///{db_file}")
     Base.metadata.create_all(bind=engine)
-    # Migration colonnes annexe 11 + FTS5 sur le moteur de test
+    # Migration colonnes annexe 11 + FTS5 + tables chunks/vecteurs sur le moteur de test
     from backend.db.database import _ensure_fts, _migrate_search_columns
+    from backend.search import chunks as _chkT
     _migrate_search_columns(engine)
     _ensure_fts(engine)
+    TestSession = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
+    _s = TestSession()
+    try:
+        _chkT.ensure_chunk_tables(_s)
+        _s.commit()
+    finally:
+        _s.close()
     TestSession = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
     monkeypatch.setattr("backend.db.database.SessionLocal", TestSession)
     data_dir = tmp_path / "data"

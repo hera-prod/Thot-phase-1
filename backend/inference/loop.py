@@ -754,9 +754,9 @@ def _execute_get_source(tool_call: dict, conv_id: str | None = None) -> dict:
                         "card": {"revision": int(_card.revision or 0) if _card else 0,
                                  "summary": (_card.summary if _card else "") or "",
                                  "status": ((_card.analysis_status or _card.status) if _card else "pending")},
-                        "available_actions": (["vision", "doc_ocr"] if (_art.kind == "image") else
-                                              ["read_text", "doc_ocr"] if (_art.kind == "pdf") else
-                                              ["read_text"]),
+                        "available_actions": (["get_document_card", "vision", "doc_ocr"] if (_art.kind == "image") else
+                                              ["get_document_card", "read_document", "doc_ocr"] if (_art.kind == "pdf") else
+                                              ["get_document_card", "read_document"]),
                     }
                     return {"ok": True, "result": _jsonGS.dumps(_meta, ensure_ascii=False), "latency_ms": int((time.perf_counter() - start)*1000)}
             except Exception:
@@ -937,6 +937,74 @@ def _execute_search_documents(tool_call: dict, conv_id: str | None = None) -> di
                 "latency_ms": int((time.perf_counter() - start) * 1000)}
     except Exception as e:
         return {"ok": False, "result": f"[search_documents: {e}]",
+                "latency_ms": int((time.perf_counter() - start) * 1000)}
+
+
+def _execute_document_card(tool_call: dict, conv_id: str | None = None) -> dict:
+    """Exécuteur get_document_card : fiche, jamais contenu ni chemin (Lot B)."""
+    start = time.perf_counter()
+    try:
+        import json as _json
+        args = tool_call.get("args") or tool_call.get("arguments") or {}
+        from backend.search import reader as _readermod, scope as _scopemod
+        from backend.db.database import SessionLocal as _SLD
+        allowed = _scopemod.resolve_allowed_artifacts(conv_id) if conv_id else set()
+        db = _SLD()
+        try:
+            payload = _readermod.get_card_payload(db, args.get("artifact_id") or "", allowed)
+        finally:
+            try:
+                db.close()
+            except Exception:
+                pass
+        if not payload.get("ok"):
+            return {"ok": False,
+                    "result": f"[{payload.get('code', 'CARD_ERROR')}: {payload.get('message', '')}]",
+                    "latency_ms": int((time.perf_counter() - start) * 1000)}
+        return {"ok": True, "result": _json.dumps(payload, ensure_ascii=False),
+                "latency_ms": int((time.perf_counter() - start) * 1000)}
+    except Exception as e:
+        return {"ok": False, "result": f"[get_document_card: {e}]",
+                "latency_ms": int((time.perf_counter() - start) * 1000)}
+
+
+def _execute_read_document(tool_call: dict, conv_id: str | None = None) -> dict:
+    """Exécuteur read_document : extrait localisé + evidence_id (Lot B)."""
+    start = time.perf_counter()
+    try:
+        import json as _json
+        args = tool_call.get("args") or tool_call.get("arguments") or {}
+        from backend.search import reader as _readermod, scope as _scopemod
+        from backend.db.database import SessionLocal as _SLR
+        allowed = _scopemod.resolve_allowed_artifacts(conv_id) if conv_id else set()
+        db = _SLR()
+        try:
+            payload = _readermod.read_payload(
+                db, args.get("artifact_id") or "", allowed,
+                query=args.get("query"), locator=args.get("locator"),
+                max_chars=args.get("max_chars") or 8000)
+        finally:
+            try:
+                db.close()
+            except Exception:
+                pass
+        if not payload.get("ok"):
+            return {"ok": False,
+                    "result": f"[{payload.get('code', 'READ_ERROR')}: {payload.get('message', '')}]",
+                    "latency_ms": int((time.perf_counter() - start) * 1000)}
+        # Lecture = travail réutilisable → observation (idempotente par empreinte ;
+        # le hook Phase 1 enrichira run_id/tool_call_id s'il suit).
+        try:
+            from backend.search import observations as _obsRD
+            _obsRD.record_tool_observation(
+                args.get("artifact_id") or "", "read_document",
+                args.get("query") or "", payload.get("excerpt", "") or "", True)
+        except Exception as e:
+            log(f"[observation] read_document record failed: {e}")
+        return {"ok": True, "result": _json.dumps(payload, ensure_ascii=False),
+                "latency_ms": int((time.perf_counter() - start) * 1000)}
+    except Exception as e:
+        return {"ok": False, "result": f"[read_document: {e}]",
                 "latency_ms": int((time.perf_counter() - start) * 1000)}
 
 
@@ -1244,6 +1312,10 @@ def run_agent_loop(
                     result = _execute_read_text({"args": args})
                 elif tool_name == "search_documents":
                     result = _execute_search_documents({"args": args}, conv_id=conv_id)
+                elif tool_name == "get_document_card":
+                    result = _execute_document_card({"args": args}, conv_id=conv_id)
+                elif tool_name == "read_document":
+                    result = _execute_read_document({"args": args}, conv_id=conv_id)
                 else:
                     result = {"ok": False, "result": f"[Outil inconnu: {tool_name}]", "latency_ms": 0}
                 if result["ok"] or attempt >= MAX_RETRY:
@@ -1263,11 +1335,13 @@ def run_agent_loop(
             tool_results.append({"tool": tool_name, "result": result["result"], "ok": result["ok"], "tool_call_id": tool_call_id})
             tool_observations.append(_format_tool_observation(tool_name, result, tool_name))
             # Annexe 11 Lot A : Observation persistée + fiche N+1 (hors search : pas d'analyse mono-fichier)
+            # Lot B : get_document_card n'enregistre pas (ouverture de fiche, pas travail) ; read_document oui.
             try:
-                _aid1 = (args.get("artifact_id") or args.get("artifactId")
-                         or args.get("source_id") or "")
-                _record_observation(tool_name, _aid1, args.get("query") or args.get("purpose") or message[:500],
-                                    result, run_id, tool_call_id)
+                if tool_name != "get_document_card":
+                    _aid1 = (args.get("artifact_id") or args.get("artifactId")
+                             or args.get("source_id") or "")
+                    _record_observation(tool_name, _aid1, args.get("query") or args.get("purpose") or message[:500],
+                                        result, run_id, tool_call_id)
             except Exception as e:
                 log(f"[observation] phase1 record failed: {e}")
 

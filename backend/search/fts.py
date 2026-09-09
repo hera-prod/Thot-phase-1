@@ -182,6 +182,94 @@ def _score_row(tokens: list[str], full: str, row: dict, age_days: float | None) 
     return round(score, 4), reasons
 
 
+def _hybrid_rerank(session, query_str: str, tokens: list[str], full_norm: str,
+                   ranked: list[dict], allowed_ids: set[str],
+                   scope_kind: str, scope_id: str) -> list[dict]:
+    """RRF(doc-FTS, chunk-FTS, vecteurs) + blend rerank local. Sans chunks indexés : no-op."""
+    from sqlalchemy import text as _text
+    try:
+        n = session.execute(
+            _text("SELECT COUNT(*) FROM chunk_search WHERE scope_kind = :sk AND scope_id = :sid"),
+            {"sk": scope_kind, "sid": scope_id}).scalar()
+    except Exception:
+        return ranked
+    if not n:
+        return ranked
+    match_q = _fts_and(tokens)
+    chunk_order: list[str] = []
+    try:
+        rows = session.execute(
+            _text("""SELECT artifact_id, bm25(chunk_search) AS r FROM chunk_search
+                     WHERE scope_kind = :sk AND scope_id = :sid AND chunk_search MATCH :q
+                     ORDER BY bm25(chunk_search) LIMIT 50"""),
+            {"sk": scope_kind, "sid": scope_id, "q": match_q}).mappings().all()
+        seen: set[str] = set()
+        for r in rows:
+            aid = r["artifact_id"]
+            if aid in (allowed_ids or set()) and aid not in seen:
+                seen.add(aid)
+                chunk_order.append(aid)
+    except Exception:
+        pass
+    vec_order: list[str] = []
+    try:
+        from backend.search import vectors as _vec
+        vec_order = [aid for aid, _ in _vec.search_vectors(session, query_str, allowed_ids or set(), 50)]
+    except Exception:
+        pass
+    signals = [[d["aid"] for d in ranked]]
+    if chunk_order:
+        signals.append(chunk_order)
+    if vec_order:
+        signals.append(vec_order)
+    if len(signals) < 2:
+        return ranked
+    try:
+        from backend.search import vectors as _vec2
+        fused = _vec2.rrf_fuse(signals)
+    except Exception:
+        return ranked
+    by_aid = {d["aid"]: d for d in ranked}
+    # Artefacts apportés par chunks/vecteurs seuls : entrée calculée depuis la fiche
+    try:
+        from backend.db.models import Artifact as _ArtH
+        missing = [aid for aid, _ in fused if aid not in by_aid]
+        if missing:
+            arts = {a.id: a for a in session.query(_ArtH).filter(_ArtH.id.in_(missing)).all()}
+            cards = _current_cards_map(session, missing)
+            from datetime import datetime, timezone
+            now = datetime.now(timezone.utc)
+            for aid in missing:
+                art, card = arts.get(aid), cards.get(aid)
+                if art is None or card is None:
+                    continue
+                try:
+                    import json as _jh
+                    kw = " ".join(_jh.loads(card.keywords_json or "[]"))
+                except Exception:
+                    kw = ""
+                row = {"filename": art.original_filename or "", "title": card.title or "",
+                       "summary": card.summary or "", "keywords": kw, "entities": "",
+                       "extracted_preview": "", "bm25": 0.0}
+                score, reasons = _score_row(tokens, full_norm, row, None)
+                by_aid[aid] = {"aid": aid, "art": art, "card": card,
+                               "score": score, "reasons": reasons or ["hybride"]}
+    except Exception:
+        pass
+    fused_ids = [aid for aid, _ in fused if aid in by_aid]
+    fused_ids += [d["aid"] for d in ranked if d["aid"] not in set(fused_ids)]
+    # Blend : 0.6 RRF normalisé + 0.4 score lexical normalisé (déterministe)
+    rrf = {aid: s for aid, s in fused}
+    rmax = max(rrf.values()) if rrf else 1.0
+    smax = max((by_aid[a]["score"] for a in fused_ids), default=0.0) or 1.0
+    blended = sorted(
+        fused_ids,
+        key=lambda a: (0.6 * (rrf.get(a, 0.0) / rmax) + 0.4 * (by_aid[a]["score"] / smax)),
+        reverse=True,
+    )
+    return [by_aid[a] for a in blended]
+
+
 def search(session, *, query: str, scope_kind: str, scope_id: str,
            allowed_ids: set[str], types: list[str] | None = None,
            status: str = "any", limit: int = 10,
@@ -300,6 +388,13 @@ def search(session, *, query: str, scope_kind: str, scope_id: str,
         score, reasons = _score_row(tokens, full_norm, dict(r), age)
         ranked.append({"aid": aid, "art": art, "card": card, "score": score, "reasons": reasons})
     ranked.sort(key=lambda d: d["score"], reverse=True)
+    # Lot C : fusion hybride SANS changer l'API — FTS doc + FTS chunks + vecteurs → RRF → rerank.
+    # Filtres de droits AVANT tout : seuls les allowed participent aux 3 listes (T-SRCH-16).
+    try:
+        ranked = _hybrid_rerank(session, original, tokens, full_norm, ranked,
+                                set(allowed_ids or set()), scope_kind, scope_id)
+    except Exception:
+        pass
 
     page = ranked[offset:offset + limit]
     results = []
@@ -307,11 +402,11 @@ def search(session, *, query: str, scope_kind: str, scope_id: str,
         art, card = d["art"], d["card"]
         kind = (art.kind or "text").lower()
         if kind == "image":
-            actions = ["get_source", "vision", "doc_ocr"]
+            actions = ["get_document_card", "vision", "doc_ocr"]
         elif kind == "pdf":
-            actions = ["get_source", "read_text", "doc_ocr"]
+            actions = ["get_document_card", "read_document", "doc_ocr"]
         else:
-            actions = ["get_source", "read_text"]
+            actions = ["get_document_card", "read_document"]
         try:
             size = None
             from backend.db.models import Blob as _Blob

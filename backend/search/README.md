@@ -7,20 +7,24 @@ Phase 1 = FTS5 + filtres, zéro embedding obligatoire.
 ## 1. Dossiers englobés
 
 ```
-backend/search/              ← CE DOSSIER (Lot A)
+backend/search/              ← CE DOSSIER (Lots A + B + C livrés)
 ├── __init__.py
 ├── scope.py                 ← resolve_allowed_artifacts() : liens actifs AVANT tout retrieval
-├── cards.py                 ← ensure_card_on_import() + revise_card_after_observation()
-├── observations.py          ← record_tool_observation() : écriture systématique post-outil
-├── fts.py                   ← table FTS5 + index_card() + fts_search() + ranking déterministe
-└── (tests) backend/tests/test_search.py  ← T-SRCH-01..17 (périmètre Lot A, voir §5)
+├── cards.py                 ← ensure_card_on_import() + revise_card_after_observation() + aperçu texte
+├── observations.py          ← record_tool_observation() : écriture systématique, idempotente par empreinte
+├── fts.py                   ← FTS5 + ranking déterministe + fusion hybride RRF (Lot C, même API)
+├── reader.py                ← get_card_payload() / read_payload() : fiche et extrait, jamais de chemin (Lot B)
+├── trash.py                 ← corbeille 7j + purge GC sécurisé (Lot B, T-SRCH-13/14)
+├── chunks.py                ← découpage borné + contextualisation + ingestion (Lot C)
+├── vectors.py               ← vecteurs locaux déterministes + RRF (Lot C, sans modèle externe)
+└── (tests) backend/tests/test_search.py (Lot A) + test_search_bc.py (Lots B/C)
 
 Branches :
-├── backend/tools/search_documents.py ← SearchDocumentsTool (découverte bornée, paginée)
-├── backend/tools/registry.py         ← registre à 5 outils
-├── backend/inference/loop.py         ← exécuteur search + record après chaque tool + get_source sans chemin
-├── backend/prompts/orchestrator.py   ← workflow chercher→choisir→ouvrir→lire, fiche≠preuve
-└── backend/db/ (models.py + database.py) ← colonnes annexe 11 + migration + DDL FTS5
+├── backend/tools/search_documents.py + document_card.py + read_document.py (façades Pydantic)
+├── backend/tools/registry.py         ← registre à 7 outils
+├── backend/inference/loop.py         ← 3 exécuteurs + record après chaque tool + get_source sans chemin
+├── backend/prompts/orchestrator.py   ← workflow chercher→choisir→ouvrir→lire, fiche≠preuve, anti-injection
+└── backend/db/ (models.py + database.py) ← colonnes annexe 11 + ArtifactChunk + migration + DDL FTS/vecteurs
 ```
 
 ## 2. Mapping annexe 11 → existant → Lot A
@@ -110,13 +114,14 @@ execute_search_documents(args, run_scope) :
       └────────────────────── brief + evidence_ids ──▶ Générateur ──▶ réponse
 ```
 
-## 5. Tests (T-SRCH, périmètre Lot A)
+## 5. Tests (T-SRCH — Lots A + B + C livrés)
 
-`01` fiche minimale à l'import · `02` OCR→observation→fiche N+1 · `03` historique fiches conservé ·
-`04` FTS sans accents (`electricite`→`électricité`) · `05` filtre types · `06` scope strict 2 convs ·
-`07` id deviné hors conv → `ARTIFACT_NOT_IN_SCOPE` · `09` 0 résultat → périmètre + suggestions ·
-`10` 3 candidats → raisons de match · `15` sans embeddings · `17` parité prompt/schémas.
-Lot B : `08` (10k, pagination), `11` (Evidence), `12` (injection), `13/14` (corbeille/GC), `16` (hybride).
+Lot A (`test_search.py`) : `01` fiche minimale · `02` OCR→observation→fiche N+1 · `03` historique ·
+`04` sans accents · `05` filtres · `06` scope strict · `07` id deviné refusé ·
+`09` zéro borné · `10` raisons de match · `15` sans embeddings · `17` parité · curseur · get_source limitée.
+Lot B/C (`test_search_bc.py`) : `08` volume 300 + pagination stable · `11` read_document→evidence
+(`page:N` OCR, `offset:N`)/`12` injection→donnée seule · `13` corbeille/restore · `14` purge GC ·
+`16` droits AVANT hybride · hybride sans régression · workspace prêt (couche scope/fts, actif Phase 5).
 
 ## 6. Pièges
 
@@ -124,3 +129,8 @@ Lot B : `08` (10k, pagination), `11` (Evidence), `12` (injection), `13/14` (corb
 - Curseur d'une autre recherche → `SEARCH_CURSOR_MISMATCH`, relancer sans curseur.
 - Fiche = aide à la découverte, jamais preuve primaire (le générateur cite Evidence/extraits).
 - Indexation = tâche de fond basse priorité ; chat interactif prioritaire (admission existante).
+- Evidence sans table dédiée : `obs_…` (extrait d'analyse) ou `blob:{sha}:chars:a-b` (texte brut).
+- Workspace : couches scope/fts prêtes ; l'exécuteur refuse `scope=workspace` tant que les espaces
+  (Phase 5) ne fournissent pas le workspace du run.
+- Hybride : ingestion chunks bornée (50/artefact, texte ≥200 car.) ; fusion auto seulement si
+  chunks indexés dans le scope, sinon lexical pur. Reranker = blend déterministe, pas un LLM.

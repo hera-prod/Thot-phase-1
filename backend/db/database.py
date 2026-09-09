@@ -159,6 +159,22 @@ def _ensure_fts(target_engine=None) -> None:
                     conn.execute(_text(stmt))
                 except Exception as e:
                     log.warning(f"index search ignoré ({stmt[:60]}…): {e}")
+            # Lot C : table ORM chunks (fresh) + DDL brut (existant) + FTS chunks + vecteurs
+            try:
+                conn.execute(_text(
+                    "CREATE TABLE IF NOT EXISTS artifact_chunks"
+                    "(id VARCHAR PRIMARY KEY, artifact_id VARCHAR, card_revision INTEGER, "
+                    "ordinal INTEGER, text TEXT, context TEXT, created_at DATETIME)"))
+                conn.execute(_text(
+                    "CREATE INDEX IF NOT EXISTS idx_chunks_artifact "
+                    "ON artifact_chunks(artifact_id, ordinal)"))
+            except Exception as e:
+                log.warning(f"DDL chunks ignoré: {e}")
+            try:
+                from backend.search import chunks as _chk
+                _chk.ensure_chunk_tables(conn)
+            except Exception as e:
+                log.warning(f"DDL chunk FTS/vecteurs ignoré: {e}")
             conn.commit()
     except Exception as e:
         log.warning(f"init FTS ignoré: {e}")

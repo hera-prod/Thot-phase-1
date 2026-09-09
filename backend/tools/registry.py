@@ -6,6 +6,8 @@ from __future__ import annotations
 from typing import Iterable
 
 from backend.tools.base import BaseTool
+from backend.tools.document_card import GetDocumentCardTool
+from backend.tools.read_document import ReadDocumentTool
 from backend.tools.vision_general import VisionGeneralTool
 from backend.tools.vision_ocr import VisionOCRTool
 from backend.tools.get_source import GetSourceTool
@@ -46,9 +48,9 @@ class ToolRegistry:
 
 
 def build_default_registry() -> ToolRegistry:
-    """Registre Phase 1 + annexe 11 Lot A : vision + doc_ocr + get_source + read_text + search_documents."""
+    """Registre Phase 1 + annexe 11 Lots A/B : 4 outils socle + 3 documentaires."""
     registry = ToolRegistry()
-    registry.register_many([VisionGeneralTool(), VisionOCRTool(), GetSourceTool(), ReadTextTool(), SearchDocumentsTool()])
+    registry.register_many([VisionGeneralTool(), VisionOCRTool(), GetSourceTool(), ReadTextTool(), SearchDocumentsTool(), GetDocumentCardTool(), ReadDocumentTool()])
     return registry
 
 

@@ -33,6 +33,28 @@ def _keywords_for(filename: str) -> list[str]:
     return seen[:12]
 
 
+TEXT_PREVIEW_CHARS = 2000  # aperçu indexé pour kind=text (Lot B : texte, sections)
+TEXT_PREVIEW_MAX_BYTES = 200_000  # garde-fou : pas d'indexation de gros blobs
+
+
+def _text_preview(db, artifact) -> str:
+    """Aperçu indexable pour les artefacts texte (lu privé, jamais de chemin exposé)."""
+    try:
+        if (artifact.kind or "").lower() != "text":
+            return ""
+        from backend.db.models import Blob as _BlobT
+        from backend.config.paths import get_data_dir as _gddT
+        blob = db.query(_BlobT).filter(_BlobT.id == artifact.blob_id).first()
+        if blob is None or (blob.size_bytes or 0) > TEXT_PREVIEW_MAX_BYTES:
+            return ""
+        cand = _gddT() / blob.relative_path
+        if not cand.exists():
+            return ""
+        return cand.read_text(encoding="utf-8", errors="replace")[:TEXT_PREVIEW_CHARS]
+    except Exception:
+        return ""
+
+
 def get_current_card(db, artifact_id: str):
     """Fiche active (is_current=1), repli legacy : la plus récente sans flag."""
     from backend.db.models import ArtifactCard as _Card
@@ -97,7 +119,7 @@ def ensure_card_on_import(db, artifact) -> object:
         )
         for link in links:
             _fts.index_card_row(db, artifact, card, link.scope_kind, link.scope_id,
-                                extracted_preview="")
+                                extracted_preview=_text_preview(db, artifact))
     except Exception:
         pass
     return card

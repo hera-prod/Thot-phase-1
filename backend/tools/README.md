@@ -1,11 +1,11 @@
-# Tools — vision / doc_ocr / get_source / read_text / search_documents
+# Tools — vision / doc_ocr / get_source / read_text / search_documents / get_document_card / read_document
 
 ## 1. Dossiers englobés
 
 ```
 backend/tools/
 ├── base.py              ← BaseTool.call (validation Pydantic, timeout 15s, max_output 8000)
-├── registry.py          ← build_default_registry() : 5 outils (Phase 1 + search L11)
+├── registry.py          ← build_default_registry() : 7 outils (Phase 1 + 3 documentaires L11)
 ├── vision_general.py    ← VisionGeneralTool (artifact_id durable, image_path compat déprécié)
 ├── vision_ocr.py        ← VisionOCRTool / doc_ocr (GLM-OCR, resolve_ocr_task)
 ├── get_source.py        ← GetSourceTool (list-all SANS source_id, sinon détail 1 fichier)

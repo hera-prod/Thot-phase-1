@@ -202,3 +202,20 @@ class Observation(Base):
     created_at = Column(DateTime, server_default=func.now())
     __table_args__ = (Index("idx_obs_artifact", "artifact_id"),
                       Index("idx_obs_artifact_created", "artifact_id", "created_at"),)
+
+
+class ArtifactChunk(Base):
+    """Fragment borné d'un document pour la recherche hybride (annexe 11, Lot C).
+
+    Découpage déterministe (800 car., chevauchement 100) ; contexte optionnel
+    (contextualisation LLM à l'ingestion, Phase 5) ; vecteur local en table dédiée.
+    """
+    __tablename__ = "artifact_chunks"
+    id = Column(String, primary_key=True)  # chk_...
+    artifact_id = Column(String, ForeignKey("artifacts.id", ondelete="CASCADE"), nullable=False)
+    card_revision = Column(Integer, default=0)
+    ordinal = Column(Integer, default=0)
+    text = Column(Text, nullable=False)
+    context = Column(Text, nullable=True)  # 50-100 tokens situant le fragment
+    created_at = Column(DateTime, server_default=func.now())
+    __table_args__ = (Index("idx_chunks_artifact", "artifact_id", "ordinal"),)
