@@ -8,18 +8,11 @@ interface AppShellProps {
 
 export function AppShell({ children }: AppShellProps) {
   return (
-    <div className="appShell" style={{
-      background: 'var(--thot-canvas)',
-      borderRadius: 'var(--thot-radius-window)',
-    }}>
-      {/* Phase 1 : TitleBar masquée (show=false) — Tauri gère la fenêtre */}
+    <div className="appShell">
       <TitleBar show={false} />
-      <div className="appMain" style={{ display: 'flex', flex: 1, overflow: 'hidden', minHeight: 0 }}>
+      <div className="appShellBody">
         <Sidebar />
-        <main
-          role="main"
-          className="appMain"
-        >
+        <main role="main" className="appMain appContent">
           {children}
         </main>
       </div>

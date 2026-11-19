@@ -3,13 +3,15 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import {
   Add24Regular, Send24Regular, Mic24Regular,
-  Square24Regular, Attach24Regular, Globe24Regular,
-  Beaker24Regular, Image24Regular, ChartMultiple24Regular,
+  Square24Regular, Globe24Regular, Beaker24Regular,
+  Image24Regular, Attach24Regular,
 } from '@fluentui/react-icons';
 import { useAttachmentDraft } from '../../features/attachments/AttachmentDraftContext';
 import { validateAttachments } from '../../features/attachments/attachmentValidation';
 import { showToast } from '../ui/Toast';
-import { convertFileSrc } from "@tauri-apps/api/core";
+import { useNavigate } from 'react-router-dom';
+import { imageStatus, onImageStatus, stageDroppedPaths, getStagedPreviewBytes, type ImageStatus } from '../../lib/ipcBridge';
+import { pathForFile } from '../../lib/ipc';
 import './Composer.css';
 
 interface DroppedFile {
@@ -20,21 +22,46 @@ interface DroppedFile {
 interface ComposerProps {
   variant: 'hero' | 'docked';
   isGenerating?: boolean;
+  blockedReason?: string | null;
   onSend?: (message: string, files?: File[]) => void;
   onStop?: () => void;
 }
 
-export function Composer({ variant, isGenerating, onSend, onStop }: ComposerProps) {
+interface ToolEntry {
+  id: string;
+  icon: React.ReactNode;
+  label: string;
+  hint?: string;
+  onClick?: () => void;
+  disabled?: boolean;
+}
+
+/**
+ * L'entrée « Studio Images » n'annonce que ce que le moteur a RÉELLEMENT répondu.
+ * Le moteur est opt-in (`THOT_IMAGE_BACKEND=flux2` ou le drapeau UI) : l'absence
+ * d'opt-in n'est pas une panne, « non activé » et « indisponible » sont deux états
+ * distincts — les confondre faisait passer une feature vérifiée pour morte.
+ */
+function studioImagesEntry(engine: ImageStatus | null): { label: string; hint: string } {
+  if (!engine) return { label: 'Studio Images — état du moteur…', hint: 'Diagnostic du moteur image en cours.' };
+  if (engine.available) return { label: 'Studio Images — moteur disponible', hint: 'Ouvrir le studio image' };
+  if (!engine.enabled) return { label: 'Studio Images — moteur non activé', hint: 'Le moteur image est opt-in : activez-le depuis le studio.' };
+  return { label: 'Studio Images — moteur indisponible', hint: engine.reason || 'Le moteur image refuse une génération.' };
+}
+
+export function Composer({ variant, isGenerating, blockedReason, onSend, onStop }: ComposerProps) {
+  const navigate = useNavigate();
   const [message, setMessage] = useState('');
   const [showTools, setShowTools] = useState(false);
+  // Diagnostic du moteur image, lu sur le MÊME canal que la page Images
+  // (`image_status`) — aucune source de vérité tierce, aucune affirmation en dur.
+  const [engine, setEngine] = useState<ImageStatus | null>(null);
   const { attachments, addFiles, removeAttachment, clearAttachments, isDraggingFiles, setDraggingFiles } = useAttachmentDraft();
-  const droppedFiles: DroppedFile[] = attachments.map((a) => {
-    let preview = a.previewUrl ?? '';
-    if (!preview && a.stagedPath) {
-      try { preview = convertFileSrc(a.stagedPath); } catch { preview = ''; }
-    }
-    return { file: a.file, previewUrl: preview };
-  });
+  const droppedFiles: DroppedFile[] = attachments.map((a) => ({
+    file: a.file,
+    previewUrl: a.previewUrl ?? ''
+  }));
+  const sendDisabled = (!message.trim() && droppedFiles.length === 0) || Boolean(blockedReason);
   const [isDraggingOverComposer, setIsDraggingOverComposer] = useState(false);
   const isDraggingGlobal = isDraggingFiles;
   const dragCounterRef = useRef(0);
@@ -43,6 +70,7 @@ export function Composer({ variant, isGenerating, onSend, onStop }: ComposerProp
   const containerRef = useRef<HTMLDivElement>(null);
 
   const handleSend = () => {
+    if (blockedReason) return;
     if ((!message.trim() && droppedFiles.length === 0) || isGenerating) return;
     const files = attachments.map((a) => a.file);
     onSend?.(message, files);
@@ -53,12 +81,13 @@ export function Composer({ variant, isGenerating, onSend, onStop }: ComposerProp
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
+      if (blockedReason) return;
       handleSend();
     }
   };
 
   // Machine à états annexe 09 §3 : Repos / Glisser détecté / Ciblage / Hors cible / Refus / Résolu
-  // Source unique = onDragDropEvent natif (dragDropEnabled) + repli HTML5 (OLE exclusif Windows §2)
+  // Source unique = le chemin HTML5, résolu en chemins réels au drop (Electron)
   const [dragUiState, setDragUiState] = useState<'repos'|'glisser_detecte'|'ciblage'|'hors_cible'|'refus'>('repos');
   const [dragFeedback, setDragFeedback] = useState<string>('');
   const [dragLive, setDragLive] = useState<string>('');
@@ -71,6 +100,8 @@ export function Composer({ variant, isGenerating, onSend, onStop }: ComposerProp
     return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
   }, []);
 
+  // Règle Phase 3.3a : WARN + resize uniquement. >5 Mo image = accepté (needsResize, réduit 1536 NaFlex
+  // côté backend) ; seul >20 Mo refuse. Parse unique à la frontière drop, pas de refus dispersé.
   const validateHover = useCallback((pathsOrFiles: Array<{ name: string; size?: number }>): { ok: boolean; reason?: string } => {
     if (pathsOrFiles.length > 4) return { ok: false, reason: `Trop de fichiers (${pathsOrFiles.length}/4 max)` };
     for (const f of pathsOrFiles) {
@@ -78,11 +109,32 @@ export function Composer({ variant, isGenerating, onSend, onStop }: ComposerProp
       const isPdf = name.endsWith('.pdf');
       const isImg = name.endsWith('.png') || name.endsWith('.jpg') || name.endsWith('.jpeg') || name.endsWith('.webp');
       if (!isPdf && !isImg) return { ok: false, reason: `Type non pris en charge : ${f.name} (PNG/JPG/WEBP/PDF)` };
-      if (f.size && isImg && f.size > 5*1024*1024) return { ok: false, reason: `${f.name} >5 Mo` };
       if (f.size && f.size > 20*1024*1024) return { ok: false, reason: `${f.name} >20 Mo` };
     }
     return { ok: true };
   }, []);
+
+  // Diagnostic du moteur image, LAZIE : à la première ouverture du panneau d'outils,
+  // jamais au montage — une barre de saisie n'a pas à sonder le GPU pour être tapée.
+  // Jamais avant l'écouteur, sinon `image_status` part dans le vide et l'entrée reste
+  // sur « état du moteur… » pour le reste de la session.
+  useEffect(() => {
+    if (!showTools || engine) return;
+    const requestId = crypto.randomUUID();
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+    void onImageStatus((status) => {
+      if (status.request_id === requestId) setEngine(status);
+    }).then((registered) => {
+      if (cancelled) { registered(); return; }
+      unlisten = registered;
+      return imageStatus(requestId);
+    }).catch(() => {
+      // Diagnostic injoignable : l'entrée reste sur « état du moteur… », elle n'invente rien.
+      if (!cancelled) setEngine(null);
+    });
+    return () => { cancelled = true; unlisten?.(); };
+  }, [showTools, engine]);
 
   useEffect(() => {
     const onWindowDragEnter = (e: DragEvent) => {
@@ -146,132 +198,14 @@ export function Composer({ variant, isGenerating, onSend, onStop }: ComposerProp
     window.addEventListener("dragover", onWindowDragOver);
     window.addEventListener("drop", onWindowDrop);
 
-    // Natif Tauri : source unique §3, position en pixels physiques §1
-    let unlisten: (() => void) | undefined;
-    let scaleFactor = window.devicePixelRatio || 1;
-    import("@tauri-apps/api/webviewWindow").then(async ({ getCurrentWebviewWindow }) => {
-      try { scaleFactor = await getCurrentWebviewWindow().scaleFactor(); } catch {}
-      const win = getCurrentWebviewWindow();
-      win.onDragDropEvent(async (event) => {
-        const payload = (event as unknown as { payload: { type: string; position?: { x:number; y:number }; paths?: string[] } }).payload;
-        const t = payload.type as 'enter'|'over'|'leave'|'drop'|'cancel';
-        const now = Date.now();
-        if (t === 'over' && now - lastOverRef.current < 120) return; // dedup rafale §3
-        if (t === 'over') lastOverRef.current = now;
-
-        if (t === 'enter') {
-          setDraggingFiles(true);
-          setDragUiState('glisser_detecte');
-          setDragFeedback('Déposez vos fichiers ici');
-          setDragLive('Dépôt possible');
-          return;
-        }
-        if (t === 'over') {
-          const pos = payload.position;
-          let inside = false;
-          if (pos) {
-            const logical = { x: pos.x / scaleFactor, y: pos.y / scaleFactor };
-            inside = isInsideComposer(logical.x, logical.y);
-          }
-          const paths = payload.paths ?? [];
-          const v = validateHover(paths.map(p => ({ name: p })));
-          if (!v.ok) {
-            setDragUiState('refus');
-            setDragFeedback(v.reason ?? 'Refus : type ou taille non conforme');
-            setDraggingFiles(true);
-            setIsDraggingOverComposer(inside);
-            return;
-          }
-          setDraggingFiles(true);
-          setIsDraggingOverComposer(inside);
-          setDragUiState(inside ? 'ciblage' : 'hors_cible');
-          setDragFeedback(inside ? 'Déposez ici pour joindre' : 'Glissez vers la barre de saisie');
-          return;
-        }
-        if (t === 'leave' || t === 'cancel') {
-          setDraggingFiles(false);
-          setIsDraggingOverComposer(false);
-          setDragUiState('repos');
-          setDragFeedback('');
-          setDragLive('');
-          return;
-        }
-        if (t === 'drop') {
-          lastNativeDropRef.current = Date.now();
-          const paths = payload.paths ?? [];
-          // Pré-validation §5 avant staging
-          const v = validateHover(paths.map(p => ({ name: p })));
-          if (!v.ok) {
-            showToast({ type: 'error', title: 'Dépôt refusé', message: v.reason ?? 'Type non pris en charge' });
-            setDraggingFiles(false);
-            setIsDraggingOverComposer(false);
-            setDragUiState('repos');
-            return;
-          }
-          setDragUiState('repos');
-          // Staging Rust annexe 10 : même forme pour drag/trombone → stage_dropped_paths
-          try {
-            const { stageDroppedPaths } = await import("../../lib/tauri");
-            const requestId = crypto.randomUUID();
-            const resp = await stageDroppedPaths(requestId, paths);
-            // resp = {stageId, items:[{stageItemId, filename, mimeDetected, preview:{token}}], rejected}
-            if (resp.rejected.length) {
-              const msgs = resp.rejected.map(r => r.message).join(', ');
-              showToast({ type: 'error', title: 'Fichiers rejetés', message: msgs });
-            }
-            if (resp.items.length) {
-              // Convertit StagingItem → File avec vrais bytes pour preview (annexe 10 vignette)
-              const stagedFiles: File[] = [];
-              for (const it of resp.items) {
-                try {
-                  let file: File;
-                  try {
-                    const { invoke } = await import("@tauri-apps/api/core");
-                    const bytes = await invoke<number[]>("get_staged_preview_bytes", { path: it.preview?.token ?? "" });
-                    const blob = new Blob([new Uint8Array(bytes)], { type: it.mimeDetected });
-                    file = new File([blob], it.filename, { type: it.mimeDetected });
-                  } catch {
-                    // Fallback si preview bytes non dispo (browser) → placeholder
-                    const blob = new Blob([], { type: it.mimeDetected });
-                    file = new File([blob], it.filename, { type: it.mimeDetected });
-                    Object.defineProperty(file, 'size', { value: it.sizeBytes, writable: false });
-                  }
-                  (file as unknown as Record<string, unknown>)._stagedPath = it.preview?.token ?? "";
-                  (file as unknown as Record<string, unknown>)._stageItemId = it.stageItemId;
-                  (file as unknown as Record<string, unknown>)._previewToken = it.preview?.token;
-                  stagedFiles.push(file);
-                } catch {}
-              }
-              if (stagedFiles.length) {
-                const { validateAttachments } = await import("../../features/attachments/attachmentValidation");
-                const res = validateAttachments(stagedFiles);
-                if (res.errors.length) showToast({ type: 'error', title: 'Fichiers ignorés', message: res.errors.join(', ') });
-                if (res.files.length) {
-                  window.dispatchEvent(new CustomEvent('thot:add-files', { detail: res.files }));
-                  const details = res.warnings.length ? ` - ${res.warnings.join(', ')}` : '';
-                  setDragLive(`${res.files.length} fichier(s) importé(s)${details}`);
-                  showToast({ type: 'success', title: res.warnings.length ? 'Fichiers reçus (redimensionnés)' : 'Fichiers reçus', message: `${res.files.length} fichier(s)${details}` });
-                }
-              }
-            }
-          } catch (e) {
-            const msg = e instanceof Error ? e.message : String(e);
-            showToast({ type: 'error', title: 'Dépôt refusé', message: msg });
-            setDragLive(`Refus : ${msg}`);
-            console.debug("[Composer] Tauri drop error", e);
-          }
-          setDraggingFiles(false);
-          setIsDraggingOverComposer(false);
-        }
-      }).then((fn) => { unlisten = fn; }).catch(() => {});
-    }).catch(() => {});
-
+      // Un seul chemin de dépôt : en conserver deux créait une double ingestion,
+      // parce que le garde d'origine se serait éteint en silence quand la coque
+      // a changé. Le chemin HTML5 résout les chemins réels au moment du drop.
     return () => {
       window.removeEventListener("dragenter", onWindowDragEnter);
       window.removeEventListener("dragleave", onWindowDragLeave);
       window.removeEventListener("dragover", onWindowDragOver);
       window.removeEventListener("drop", onWindowDrop);
-      if (unlisten) unlisten();
     };
   }, [setDraggingFiles, isInsideComposer, validateHover]);
 
@@ -311,17 +245,68 @@ export function Composer({ variant, isGenerating, onSend, onStop }: ComposerProp
     }
   };
 
+  /**
+   * Pipeline de dépôt : chemins réels -> staging backend -> vignette -> brouillon.
+   * La validation par magic bytes reste côté backend ; le renderer ne fait que
+   * réhydrater des `File` pour l'aperçu, comme le faisait le chemin natif.
+   */
+  const stageDropped = async (files: File[]) => {
+    const paths = files.map((f) => pathForFile(f)).filter((p): p is string => typeof p === 'string' && p.length > 0);
+    if (paths.length === 0) {
+      // Aucun chemin résolu (source non-fichier) : on retombe sur les File bruts.
+      processFiles(files);
+      return;
+    }
+    try {
+      const response = await stageDroppedPaths(crypto.randomUUID(), paths);
+      if (response.rejected.length > 0) {
+        showToast({ type: 'error', title: 'Fichiers rejetés', message: response.rejected.map((r) => r.message).join(', ') });
+      }
+      if (response.items.length === 0) return;
+      const staged: File[] = [];
+      for (const item of response.items) {
+        try {
+          const bytes = await getStagedPreviewBytes(item.preview?.token ?? '');
+          // Copie dans un ArrayBuffer-owned : TS 7 refuse un Uint8Array dont le
+          // buffer pourrait etre un SharedArrayBuffer.
+          const blob = new Blob([bytes.slice().buffer as ArrayBuffer], { type: item.mimeDetected });
+          const file = new File([blob], item.filename, { type: item.mimeDetected });
+          (file as unknown as Record<string, unknown>)._stagedPath = item.preview?.token ?? '';
+          (file as unknown as Record<string, unknown>)._stageItemId = item.stageItemId;
+          (file as unknown as Record<string, unknown>)._previewToken = item.preview?.token;
+          staged.push(file);
+        } catch {
+          // Vignette indisponible : on garde l'item avec une taille honnête.
+          const blob = new Blob([], { type: item.mimeDetected });
+          const file = new File([blob], item.filename, { type: item.mimeDetected });
+          Object.defineProperty(file, 'size', { value: item.sizeBytes, writable: false });
+          staged.push(file);
+        }
+      }
+      processFiles(staged);
+    } catch (error) {
+      // Le staging backend peut être indisponible : on n'en perd pas le dépôt pour
+      // autant. Les `File` bruts partent dans le brouillon, la validation par
+      // magic bytes aura lieu à l'envoi.
+      const message = error instanceof Error ? error.message : String(error);
+      processFiles(files);
+      setDragLive('Fichiers reçus (staging indisponible)');
+      showToast({ type: 'info', title: 'Fichiers reçus', message: `Staging indisponible : ${message}` });
+    }
+  };
+
   const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
-    // Annexe 09 §2 : dragDropEnabled natif exclusif Windows → HTML5 inactif en Tauri, évite 3×
-    if (typeof window !== 'undefined' && (window as unknown as { __TAURI__?: unknown }).__TAURI__) return;
-    if (Date.now() - lastNativeDropRef.current < 250) return; // dedup Tauri natif
+    if (Date.now() - lastNativeDropRef.current < 250) return;
     dragCounterRef.current = 0;
     setIsDraggingOverComposer(false);
     setDraggingFiles(false);
     const files = Array.from(e.dataTransfer.files);
-    if (files.length > 0) processFiles(files);
+    if (files.length === 0) return;
+    // Même pipeline que le chemin natif : on stadge les chemins réels pour que la
+    // validation par magic bytes reste côté backend et non dans le renderer.
+    void stageDropped(files);
   };
 
   const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
@@ -361,7 +346,7 @@ export function Composer({ variant, isGenerating, onSend, onStop }: ComposerProp
   } : {};
 
   const wrapperStyle: React.CSSProperties = {
-    minHeight: variant === 'docked' ? 56 : undefined,
+    minHeight: variant === 'docked' ? 72 : undefined,
   };
 
   // Voile d'ambiance page (en-dehors Composer) — annexe 09 §3
@@ -369,6 +354,37 @@ export function Composer({ variant, isGenerating, onSend, onStop }: ComposerProp
   const showPageAmbient = dragUiState === 'glisser_detecte' || dragUiState === 'hors_cible';
   const isRefus = dragUiState === 'refus';
   const isCiblage = dragUiState === 'ciblage';
+
+  const tools: ToolEntry[] = [
+    { id: 'joindre', icon: <Attach24Regular />, label: 'Joindre un fichier (PNG/JPG/PDF)', onClick: () => fileInputRef.current?.click() },
+    // « Recherche web » n'était pas une feature absente mais une feature
+    // livrée : `web_research` est câblé, contractuel et mesuré. L'entrée
+    // disabled mentait donc deux fois — elle refusait un clic possible, et
+    // elle annonçait une phase qui existait depuis le 28/09. Elle ouvre les
+    // réglages, parce que c'est là que se décide ce que la recherche a le
+    // droit de faire : le réseau et le moteur ne se choisissent pas dans un
+    // message. Le réglage lui-même reste sur le fichier, relu par le sidecar.
+    {
+      id: 'recherche-web',
+      icon: <Globe24Regular />,
+      label: 'Recherche web',
+      hint: 'Activer, choisir le moteur et vérifier l’accès réseau',
+      onClick: () => navigate('/settings'),
+    },
+    // Deep Research reste absent, et le dit : c'est un mode d'orchestration
+    // (plusieurs requêtes, synthèse, rapport) qui n'existe pas ici. Une
+    // entrée désactivée le déclare, ce qu'un silence ne ferait pas.
+    { id: 'deep-research', icon: <Beaker24Regular />, label: 'Deep Research — non disponible', disabled: true },
+    {
+      id: 'studio-images',
+      icon: <Image24Regular />,
+      ...studioImagesEntry(engine),
+      // Navigation applicative comme le reste de l'app (GeneratedImageCard, Sidebar) :
+      // window.location.assign rechargeait la page entière et perdait le routeur, la
+      // pile de navigation et les pièces jointes en cours de saisie.
+      onClick: () => navigate('/images'),
+    },
+  ];
 
   return (
     <>
@@ -381,7 +397,7 @@ export function Composer({ variant, isGenerating, onSend, onStop }: ComposerProp
       )}
       {isRefus && (
         <div className="pageDragAmbientOverlay pageDragAmbientRefus" aria-hidden="true">
-          <div className="pageDragHint pageDragHintRefus">{dragFeedback || 'Type non pris en charge — PNG/JPG/WEBP/PDF, 4 max, 5 Mo image / 20 Mo PDF'}</div>
+          <div className="pageDragHint pageDragHintRefus">{dragFeedback || 'Type non pris en charge — PNG/JPG/WEBP/PDF, 4 max, 20 Mo max (images >5 Mo réduites auto)'}</div>
         </div>
       )}
       <div
@@ -400,25 +416,20 @@ export function Composer({ variant, isGenerating, onSend, onStop }: ComposerProp
           background: 'var(--thot-surface-raised)', border: '1px solid var(--thot-border)',
           boxShadow: 'var(--thot-shadow-card)',
         }}>
-          {[
-            { icon: <Attach24Regular />, label: 'Joindre un fichier (PNG/JPG/PDF)', onClick: () => fileInputRef.current?.click() },
-            { icon: <Globe24Regular />, label: 'Recherche web — Phase 2', disabled: true },
-            { icon: <Beaker24Regular />, label: 'Deep Research — Phase 2', disabled: true },
-            { icon: <Image24Regular />, label: 'Vision (LFM2.5-VL-3B) auto en mode Agent' },
-            { icon: <ChartMultiple24Regular />, label: 'OCR (GLM-OCR) auto en mode Agent' },
-          ].map((tool) => (
+          {tools.map((tool) => (
             <button
-              key={tool.label}
+              key={tool.id}
               onClick={tool.onClick}
-              disabled={(tool as { disabled?: boolean }).disabled}
+              disabled={tool.disabled}
+              title={tool.hint}
               style={{
                 display: 'flex', alignItems: 'center', gap: 10, width: '100%',
                 padding: '8px 12px', borderRadius: 8, border: 'none',
-                background: 'transparent', cursor: (tool as { disabled?: boolean }).disabled ? 'not-allowed' : 'pointer', fontSize: 14,
-                color: (tool as { disabled?: boolean }).disabled ? 'var(--thot-text-faint)' : 'var(--thot-text)', fontFamily: 'var(--thot-font-family)',
-                opacity: (tool as { disabled?: boolean }).disabled ? 0.6 : 1,
+                background: 'transparent', cursor: tool.disabled ? 'not-allowed' : 'pointer', fontSize: 14,
+                color: tool.disabled ? 'var(--thot-text-faint)' : 'var(--thot-text)', fontFamily: 'var(--thot-font-family)',
+                opacity: tool.disabled ? 0.6 : 1,
               }}
-              onMouseEnter={(e) => { if (!(tool as { disabled?: boolean }).disabled) e.currentTarget.style.background = 'var(--thot-surface-2)'; }}
+              onMouseEnter={(e) => { if (!tool.disabled) e.currentTarget.style.background = 'var(--thot-surface-2)'; }}
               onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
             >
               <span style={{ color: 'var(--thot-text-muted)' }}>{tool.icon}</span>
@@ -428,7 +439,7 @@ export function Composer({ variant, isGenerating, onSend, onStop }: ComposerProp
         </div>
       )}
 
-      {/* Hidden file input — hash+path : on envoie le binaire au Rust, pas de base64 */}
+      {/* Hidden file input — hash+path : on envoie le binaire via electron/sidecar.cjs, pas de base64 */}
       <input ref={fileInputRef} type="file" accept="image/png,image/jpeg,image/webp,application/pdf" multiple style={{ display: 'none' }} onChange={handleFileInput} />
 
       {/* Drop overlay — spec animé */}
@@ -511,21 +522,6 @@ export function Composer({ variant, isGenerating, onSend, onStop }: ComposerProp
           </div>
 
           <button
-            aria-label="Joindre"
-            onClick={() => fileInputRef.current?.click()}
-            style={{
-              width: 40, height: 40, borderRadius: 'var(--thot-radius-pill)',
-              border: 'none', background: 'transparent', cursor: 'pointer',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              color: 'var(--thot-text-muted)', flexShrink: 0,
-            }}
-            onMouseEnter={(e) => e.currentTarget.style.background = 'var(--thot-surface-2)'}
-            onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
-          >
-            <Attach24Regular />
-          </button>
-
-          <button
             aria-label="Microphone — Phase 2"
             disabled
             style={{
@@ -554,14 +550,14 @@ export function Composer({ variant, isGenerating, onSend, onStop }: ComposerProp
           ) : (
             <button
               onClick={handleSend}
-              disabled={!message.trim() && droppedFiles.length === 0}
+              disabled={sendDisabled}
               aria-label="Envoyer"
               style={{
                 width: 40, height: 40, borderRadius: 'var(--thot-radius-pill)',
-                border: 'none', background: 'var(--thot-gold)', cursor: (!message.trim() && droppedFiles.length === 0) ? 'not-allowed' : 'pointer',
+                border: 'none', background: 'var(--thot-gold)', cursor: sendDisabled ? 'not-allowed' : 'pointer',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                 color: '#fff', flexShrink: 0,
-                opacity: (!message.trim() && droppedFiles.length === 0) ? 0.5 : 1,
+                opacity: sendDisabled ? 0.5 : 1,
               }}
             >
               <Send24Regular />
@@ -570,21 +566,18 @@ export function Composer({ variant, isGenerating, onSend, onStop }: ComposerProp
         </div>
       </div>
 
-      {/* Drop hint */}
-      {variant === 'hero' && droppedFiles.length === 0 && (
-        <div style={{ marginTop: 12, textAlign: 'center' }}>
-          <span style={{
-            display: 'inline-flex', alignItems: 'center', gap: 8,
-            padding: '8px 16px', borderRadius: 'var(--thot-radius-pill)',
-            background: 'var(--thot-surface-raised)',
-            border: '1px solid var(--thot-border)',
-            fontSize: 13, color: 'var(--thot-text-muted)',
-          }}>
-            <Attach24Regular style={{ fontSize: 16 }} />
-            Glissez-déposez une image ou un PDF ici (max 4 — 5 MB image, 20 MB PDF)
-          </span>
-        </div>
+      {blockedReason && (
+        <p
+          role="status"
+          style={{
+            margin: '8px 4px 0', fontSize: 12, lineHeight: 1.4,
+            color: 'var(--thot-text-muted)',
+          }}
+        >
+          {blockedReason}
+        </p>
       )}
+
       </div>
       </div>
     </>

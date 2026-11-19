@@ -1,0 +1,187 @@
+================================================================================
+ETAT DU DEPOT — Thot Phase 1
+================================================================================
+Document de travail — ne pas publier en l'état, à conserver hors dépôt ou à
+régénérer avant chaque envoi.
+
+Date du constat : 2026-11-18 (comptages régénérés à cette date)
+Dossier racine : racine du dépôt
+
+--------------------------------------------------------------------------------
+1. IDENTITE DU PROJET
+--------------------------------------------------------------------------------
+Nom               : Thot Phase 1
+Version           : 1.0.0
+Phase             : 1
+Licence code      : MIT (voir LICENSE à la racine)
+Licence poids     : FLUX.2 [klein] Non-Commercial License (usage non commercial)
+Auteur            : Raclin Théo (Héra), Copyright (c) 2026
+Date de build     : 2026-10-27 (distribution.json)
+Cible             : linux-x64 (bundle AppImage Electron)
+Mode portable     : ACTIF (portable.json present -> donnees dans ./data/)
+Depot Git         : NON (aucun dossier .git present a la racine)
+Poids total       : 27,2 Mo d'octets (poids de modeles exclus)
+
+Description : assistant conversationnel local (chat, pièces jointes, historique,
+preuves) cible materiel limite (budget 8 Go VRAM), distribue sous forme de
+dossier portable contenant le code source.
+
+--------------------------------------------------------------------------------
+2. STRUCTURE DES DOSSIERS (nombre de fichiers)
+--------------------------------------------------------------------------------
+backend/           : 177 fichiers  (moteur Python sidecar : config, db,
+                                    image_engine, inference, ingestion, ipc,
+                                    prompts, search, services, tools, utils)
+frontend/          :  75 fichiers  (interface React/TypeScript, Vite)
+electron/          :   6 fichiers  (processus principal Electron, .cjs)
+scripts/           :  17 fichiers  (scripts utilitaires, diagnostics, lanceur,
+                                    README.md ; dont scripts/assets/ : 2 PNG de
+                                    diagnostic)
+tests/             : 206 fichiers  (backend, electron, fixtures, frontend)
+documentation/     :   1 fichier   (Thot_phase_1.pdf — 14,26 Mo)
+licenses/          :   1 fichier   (README.md — index des licences)
+models/            :   1 fichier   (README.md seulement — poids exclus du depot)
+Racine             :  20 fichiers  (README.md, package.json, pyproject.toml,
+                                    requirements.txt, distribution.json, etc.)
+--------------------------------------------------------------------------------
+TOTAL              : 504 fichiers (503 hors ce rapport — hors .git, caches,
+                                   node_modules, .venv, data, dist ; .ruff_cache/
+                                   exclu : artefact de linter, jamais compté)
+
+--------------------------------------------------------------------------------
+3. FICHIERS A LA RACINE
+--------------------------------------------------------------------------------
+ETAT_DU_DEPOT.txt             Ce rapport (document de travail, ne pas publier)
+lancer-linux.sh               Lanceur Linux
+lancer-macos.command          Lanceur macOS
+lancer-windows.bat            Lanceur Windows
+package.json                  Configuration Node (racine)
+package-lock.json             Verrouillage dependances Node
+pyproject.toml                Reference versions Python, config pytest/PyInstaller
+requirements.txt              Dependances Python (installation via pip)
+electron-builder.yml          Configuration de build Electron
+distribution.json             Metadata de distribution (build 2026-10-27)
+portable.json                 Active le mode portable strict
+LICENSE                       Licence MIT du code
+THIRD_PARTY_NOTICES.md        Mentions des licences tierces
+README.md                     Documentation principale / demarrage rapide
+contrat_modes_image.py        Contrats modes image
+reference_inpainting_klein.py Reference inpainting FLUX.2 klein
+sidecar.py                    Sidecar Python
+.gitignore                    Règles d'ignorance Git
+.gitattributes                Regles Git (fins de ligne, LFS pour les PDF)
+
+--------------------------------------------------------------------------------
+4. DEPENDANCES
+--------------------------------------------------------------------------------
+Prerequis systeme :
+  - Python >= 3.11
+  - Node.js >= 22.12 et npm (Electron verrouille cette version minimale)
+  - Environnement graphique (X11/Wayland Linux, bureau macOS ou Windows)
+
+  Sur Linux, Electron (Chromium) requiert un sandbox operationnel ; cela depend
+  de l'environnement. La desactivation du sandbox (`--no-sandbox`) n'est pas
+  recommandee comme solution publique.
+
+Dependances Python (requirements.txt / pyproject.toml) :
+  llama-cpp-python==0.3.34, sqlalchemy>=2.0, pymupdf>=1.24, pillow>=10.0,
+  torch==2.13.0, torchvision==0.28.0, diffusers==0.39.0, gguf==0.19.0,
+  safetensors==0.8.0, tokenizers==0.22.2, jinja2==3.1.6, psutil==5.9.8,
+  transformers>=4.56,<6, huggingface_hub>=0.34, openpyxl>=3.1, pandas>=2.0,
+  odfpy>=1.4, defusedxml>=0.7, pyinstaller>=6.0, pytest>=8.0 (tests)
+  Installation via pip : pip install -r requirements.txt — le venv .venv est
+  créé au premier lancement par les lanceurs (lancer-*.sh/command/bat).
+
+Dependances Node racine (package.json) :
+  electron ^44.5.0, electron-builder ^26.18.1
+  (react, react-dom, typescript et vite vivent dans frontend/package.json)
+
+--------------------------------------------------------------------------------
+5. MODELES (NON INCLUS)
+--------------------------------------------------------------------------------
+Les poids de modeles ne sont pas inclus dans ce depot (aucun poids volumineux
+versionne ; seul le PDF de presentation passe par Git LFS, cf. .gitattributes).
+Dossier attendu : models/
+  - LLM/LFM2.5-8B-A1B-UD-Q4_K_M.gguf (~5.0 Go)
+  - Vision-general/LFM2.5-VL-3B-UD-Q4_K_XL.gguf + mmproj (~3.1 Go)
+  - PaddleOCR-VL-1.6 (~1.8 Go)
+  - colbert/LFM2.5-ColBERT-350M (679 Mo de fichiers sur disque, 685 Mio de VRAM
+    residente en bf16, 674 Mio pour la seule relecture du fichier de poids)
+  - flux2-klein/ (~14.8 Go — moteur image, pic VRAM ~3.06 Go)
+Total modeles : environ 25 Go (a placer manuellement dans models/, a la racine
+                de l'application — recherche portable > bundle > CWD > app_data)
+Sans modeles : l'interface demarre mais l'inférence (chat, generation image,
+OCR, vision) est indisponible.
+
+--------------------------------------------------------------------------------
+6. DONNEES LOCALES
+--------------------------------------------------------------------------------
+Dossier data/ : INEXISTANT (gitignore, non cree)
+Mode portable (portable.json) : data/ serait a la racine
+Mode installe (sans portable.json) : ~/.local/share/thot/data (XDG)
+Arborescence data :
+  database/   (thot-phase-1.db — 25 tables + schema_migrations + 2 tables FTS)
+  blobs/      (adresses par contenu, dedupliques : sharding <2 hex>/<sha256>.bin
+               au depot, plus <sha256><ext> a plat des chemins historiques)
+  logs/       (journaux du sidecar)
+  temp/       (volatil ; temp/staged/ pour le staging des pieces jointes)
+  staged/     (effets image : <effect_id>.png — backend/tools/generate_image.py)
+  backups/    (sauvegardes)
+  derived/    (figures/ extraites, reconstruites a la demande —
+               backend/ingestion/figures_etape.py)
+Pas de previews/ (les vignettes sont reconstruites a la demande), pas de
+trash/ (la corbeille est un etat SQL, backend/search/trash.py), pas de
+models/ (les poids vivent dans models/, a la racine de l'application, HORS
+data/).
+Base de donnees : SQLite WAL, thot-phase-1.db (25 tables métier +
+                  schema_migrations + 2 tables FTS)
+
+--------------------------------------------------------------------------------
+7. ARTEFACTS / ENVIRONNEMENT
+--------------------------------------------------------------------------------
+.venv/       : absent (cree au premier lancement par les lanceurs, ignore par .gitignore)
+node_modules/: absent (non installe)
+data/        : absent
+dist/        : absent
+build/       : absent
+release/     : absent
+.env         : absent (ignore, secrets)
+
+--------------------------------------------------------------------------------
+8. COMMANDES DE DEMARRAGE / TESTS
+--------------------------------------------------------------------------------
+Lancement :
+  Linux  : ./lancer-linux.sh
+  macOS  : double-clic sur lancer-macos.command
+  Windows: double-clic sur lancer-windows.bat
+
+Developpement :
+  npm run dev                 (Electron + frontend)
+  npm run dev:web             (frontend seul, Vite)
+  npm run start               (production)
+
+Tests :
+  python3 -m pytest tests/backend/     (marqueurs slow exclus par defaut)
+  npm run test:electron                (tests Electron)
+  npm --prefix frontend run test       (tests frontend)
+
+Integrite depot :
+  npm run depot:verifier   (verifier l'integrite du depot)
+  npm run depot:reparer    (reparer le depot)
+  npm run depot:gc         (nettoyage / GC)
+
+--------------------------------------------------------------------------------
+9. ETAT GENERAL
+--------------------------------------------------------------------------------
+- Depot code complet et coherent (backend + frontend + electron + scripts + tests).
+- Pas de repository Git initialise (pas de .git, pas d'historique de commits).
+- Pas d'environnement d'execution installe (ni .venv Python, ni node_modules).
+- Pas de donnees locales (dossier data/ absent).
+- Pas de poids de modeles (dossier models/ contient uniquement son README).
+- Mode portable active via portable.json.
+- Pret a etre installe puis lance via les lanceurs ./lancer-*.
+- Pret a etre pousse sur un depot (Git ou HuggingFace Hub) une fois initialise.
+
+================================================================================
+Fin de l'etat du depot.
+================================================================================

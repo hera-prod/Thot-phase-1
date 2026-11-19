@@ -1,4 +1,5 @@
-# tools/read_document.py — Lecture localisée avec evidence_id (annexe 11 Lot B)
+# tools/read_document.py — gardé comme lecteur sous ask_files
+# Lecture localisée avec evidence_id (annexe 11 Lot B). Le LLM passe MAINTENANT par ask_files.
 # Le backend retourne un extrait + localisateur + evidence_id, jamais 500 pages d'un coup.
 from __future__ import annotations
 
@@ -17,7 +18,7 @@ class ReadDocumentArgs(BaseModel):
     purpose: str = Field(min_length=1, max_length=500)
 
 
-class ReadDocumentTool(BaseTool):
+class ReadDocumentTool(BaseTool[ReadDocumentArgs]):
     name = "read_document"
     description = (
         "Lit un extrait localisé d'un document (texte, Markdown, CSV, code, PDF déjà extrait). "
@@ -31,35 +32,74 @@ class ReadDocumentTool(BaseTool):
 
     async def execute(self, args: ReadDocumentArgs, ctx: ToolContext) -> ToolResult:
         import json as _json
+
         conv_id = getattr(ctx, "conv_id", None) or (ctx.request_id or "")
         try:
-            from backend.search import observations as _obs, reader as _reader, scope as _scope
+            from backend.search import (
+                observations as _obs,
+                reader as _reader,
+                scope as _scope,
+            )
             from backend.db.database import SessionLocal as _SL
+
             allowed = _scope.resolve_allowed_artifacts(conv_id)
             db = _SL()
             try:
                 payload = _reader.read_payload(
-                    db, args.artifact_id, allowed, query=args.query,
-                    locator=args.locator, max_chars=args.max_chars)
+                    db,
+                    args.artifact_id,
+                    allowed,
+                    query=args.query,
+                    locator=args.locator,
+                    max_chars=args.max_chars,
+                )
             finally:
                 try:
                     db.close()
                 except Exception:
                     pass
         except Exception as e:
-            return ToolResult(ok=False, display_summary="read_document: erreur",
-                              error=str(e)[:500])
+            return ToolResult(
+                ok=False, display_summary="read_document: erreur", error=str(e)[:500]
+            )
         if not payload.get("ok"):
-            return ToolResult(ok=False,
-                              display_summary=f"read_document: {payload.get('code')}",
-                              error=payload.get("message", "")[:500])
-        # Lecture = travail réutilisable → observation (fiche N+1 en prime)
-        try:
-            _obs.record_tool_observation(
-                args.artifact_id, "read_document", args.query or args.purpose,
-                payload.get("excerpt", "") or "", True, run_id=ctx.run_id,
-                tool_call_id=None, model_id=None)
-        except Exception:
-            pass
-        return ToolResult(ok=True, content=_json.dumps(payload, ensure_ascii=False),
-                          display_summary=f"read_document: {payload.get('locator_used')}")
+            return ToolResult(
+                ok=False,
+                display_summary=f"read_document: {payload.get('code')}",
+                error=payload.get("message", "")[:500],
+            )
+        # Lecture = travail réutilisable → observation (fiche N+1 en prime).
+        #
+        # L'écriture n'est plus « au mieux ». Le `except: pass` d'ici rendait
+        # l'extrait inexistant ET le résultat réussi : l'outil annonçait une
+        # lecture alors qu'aucune observation n'était écrite, donc sans fiche,
+        # sans fragments et sans index — et l'`evidence_id` renvoyé, lui, ne
+        # désignait rien en base. La compaction rejette ensuite les citations
+        # d'observations inexistantes : la preuve inventée était donc le seul
+        # effet du `pass`.
+        #
+        # `None` n'est pas un succès non plus : il signifie « rien à écrire »,
+        # ce qui est impossible ici — l'extrait existe et son artefact vient
+        # d'être lu. Les deux cas sont donc des échecs, et remontent : la
+        # couche appelante rendra un refus nommé au lieu d'un extrait dont
+        # personne ne pourra plus se servir.
+        observation = _obs.record_tool_observation(
+            args.artifact_id,
+            "read_document",
+            args.query or args.purpose,
+            payload.get("excerpt", "") or "",
+            True,
+            run_id=ctx.run_id,
+            tool_call_id=None,
+            model_id=None,
+        )
+        if observation is None:
+            raise RuntimeError(
+                f"extrait obtenu mais aucune observation écrite pour "
+                f"{args.artifact_id} : la lecture ne peut pas être citée."
+            )
+        return ToolResult(
+            ok=True,
+            content=_json.dumps(payload, ensure_ascii=False),
+            display_summary=f"read_document: {payload.get('locator_used')}",
+        )

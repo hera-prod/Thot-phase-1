@@ -1,18 +1,40 @@
-# tools/registry.py — Registre Phase 1 (2 outils seulement, pas de toolset complexe)
-# Notes FR : pas de policy/permissions (Phase 2), séquentiel 1 tool/iter
-# Supprimé v0.8 : 8 outils, ToolsetProfile, cache, approval — garde vision+doc_ocr
+# tools/registry.py — Registre des outils, avec leur rôle déclaré
+#
+# DEUX CATÉGORIES, et la différence est structurante :
+#
+#   OUTILS ORCHESTRATEUR — proposés au modèle dans sa liste d'actions. Il les
+#     choisit lui-même. Ce sont les seuls dont le nom doit lui être familier.
+#
+#   SOUS-OUTILS — jamais proposés. Ce sont des compétences que les outils
+#     orchestrateur appellent en interne, selon le type de fichier reçu.
+#     `ask_files` ne demande pas au modèle de choisir entre OCR, vision et
+#     lecture : il route. Lui exposer les trois l'obligerait à deviner, et il se
+#     tromperait — un OCR sur une illustration ne rend rien, une description
+#     visuelle sur un tableau perd les chiffres.
+#
+# Un sous-outil retiré casse son parent. Un outil orchestrateur retiré devient
+# invisible. Ce ne sont pas les mêmes opérations.
+#
+# `get_source` et `get_document_card` ont été retirés : aucun appelant. Ils ne
+# servaient qu'à annoncer des actions que le modèle ne pouvait pas exécuter.
+#
+# AUCUN outil n'est enregistré sans rôle : un outil que rien n'appelle n'est
+# pas une capacité, c'est du code qui promet sans être tenu de livrer.
 from __future__ import annotations
 
 from typing import Iterable
 
 from backend.tools.base import BaseTool
-from backend.tools.document_card import GetDocumentCardTool
 from backend.tools.read_document import ReadDocumentTool
 from backend.tools.vision_general import VisionGeneralTool
 from backend.tools.vision_ocr import VisionOCRTool
-from backend.tools.get_source import GetSourceTool
 from backend.tools.read_text import ReadTextTool
 from backend.tools.search_documents import SearchDocumentsTool
+from backend.tools.search_info import SearchInfoTool
+from backend.tools.find_files import FindFilesTool
+from backend.tools.ask_files import AskFilesTool
+from backend.tools.generate_image import GenerateImageTool
+from backend.tools.web_research import WebResearchTool
 
 
 class ToolRegistry:
@@ -48,9 +70,21 @@ class ToolRegistry:
 
 
 def build_default_registry() -> ToolRegistry:
-    """Registre Phase 1 + annexe 11 Lots A/B : 4 outils socle + 3 documentaires."""
+    """Construit le registre en séparant ce que le modèle voit de ce qu'il ne voit pas.
+
+    L'ordre d'insertion est une convention lue par les tests : les définitions
+    de découverte sont proposées dans cet ordre au re-ask non contraint.
+    """
     registry = ToolRegistry()
-    registry.register_many([VisionGeneralTool(), VisionOCRTool(), GetSourceTool(), ReadTextTool(), SearchDocumentsTool(), GetDocumentCardTool(), ReadDocumentTool()])
+    registry.register_many([SearchInfoTool(), FindFilesTool(), AskFilesTool()])
+    registry.register(GenerateImageTool())
+    registry.register(WebResearchTool())
+    # Sous-outils : compétences appelées par les outils ci-dessus. Ni exposés au
+    # modèle, ni protégés d'un appel direct — les retirer casserait `ask_files`.
+    registry.register_many([
+        VisionOCRTool(), VisionGeneralTool(),
+        ReadDocumentTool(), ReadTextTool(), SearchDocumentsTool(),
+    ])
     return registry
 
 

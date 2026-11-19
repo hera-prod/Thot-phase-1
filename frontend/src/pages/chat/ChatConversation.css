@@ -1,16 +1,20 @@
+.chatPage {
+  container-type: inline-size;
+}
+
 .conversationLayout {
   display: grid;
-  grid-template-columns: minmax(0, 820px) 260px;
-  justify-content: center;
-  align-items: start;
-  gap: 32px;
-  width: min(1240px, 100%);
-  margin: 0 auto;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 820px) minmax(260px, 1fr);
+  column-gap: 24px;
+  width: 100%;
+  margin: 0;
   padding: 24px 32px 36px;
+  align-items: start;
   min-height: 0;
 }
 
 .chatColumn {
+  grid-column: 2;
   min-width: 0;
   min-height: 0;
   background: var(--thot-canvas);
@@ -28,10 +32,20 @@
   flex: 1;
 }
 
+/* La carte de progression vient du studio image : dans la colonne de conversation elle
+   s'aligne sur la bulle (pas de marge de page) et occupe toute la largeur du tour. */
+.chatColumnInner .img-progress {
+  width: 100%;
+  margin: 0;
+}
+
 .detailsRail {
+  grid-column: 3;
+  justify-self: end;
+  align-self: start;
+  width: 260px;
   position: sticky;
   top: 24px;
-  align-self: start;
   border-left: 1px solid var(--thot-border-subtle);
   display: flex;
   flex-direction: column;
@@ -41,22 +55,52 @@
   max-height: calc(100vh - 56px - 48px);
 }
 
-.composerDock {
-  width: min(820px, calc(100vw - 64px));
-  margin: 0 auto;
-  flex-shrink: 0;
+.detailsRailRestore {
+  grid-column: 3;
+  justify-self: end;
+  align-self: start;
+  position: sticky;
+  top: 24px;
+  width: 32px;
+  height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--thot-border-subtle);
+  border-right: none;
+  border-radius: 8px 0 0 8px;
+  background: var(--thot-canvas);
+  color: var(--thot-text-muted);
+  cursor: pointer;
+  padding: 0;
 }
 
-@media (max-width: 1040px) {
+.composerDock {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 820px) minmax(260px, 1fr);
+  column-gap: 24px;
+  width: 100%;
+  padding: 0 32px;
+}
+
+.composerDock > * {
+  grid-column: 2;
+  min-width: 0;
+}
+
+@container (max-width: 1191px) {
   .conversationLayout {
     display: block;
-    width: min(820px, 100%);
-    padding-inline: 20px;
+    width: min(860px, 100%);
+    margin: 0 auto;
+    padding: 24px 20px 36px;
   }
-  .detailsRail {
-    display: none;
-  }
+  .detailsRail,
+  .detailsRailRestore { display: none; }
   .composerDock {
-    width: calc(100vw - 40px);
+    display: block;
+    width: min(820px, calc(100% - 40px));
+    margin: 0 auto;
+    padding: 0;
   }
 }

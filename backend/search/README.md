@@ -1,8 +1,11 @@
-# Recherche documentaire — moteur local (annexe 11)
+# Recherche documentaire — moteur local (décision interne)
 
-Cible : `Depot_Github/annexes/11_moteur_recherche_fichiers_toolcalls_llm.md`.
+> Note : les renvois `docs/...`, `q-r.md` et à la « Bible » désignent la documentation interne du projet ; elle n'est pas incluse dans l'export HuggingFace.
+
+Décision d'architecture interne (le mémoire d'origine, « annexe 11 », n'est pas livré
+dans l'export ; aucune référence à un dossier `docs/` du dépôt).
 Le LLM est un utilisateur guidé du moteur, jamais le moteur lui-même.
-Phase 1 = FTS5 + filtres, zéro embedding obligatoire.
+Phase 1 = FTS5 (document + fragment) + ColBERT late interaction, fusionnés par RRF.
 
 ## 1. Dossiers englobés
 
@@ -16,67 +19,52 @@ backend/search/              ← CE DOSSIER (Lots A + B + C livrés)
 ├── reader.py                ← get_card_payload() / read_payload() : fiche et extrait, jamais de chemin (Lot B)
 ├── trash.py                 ← corbeille 7j + purge GC sécurisé (Lot B, T-SRCH-13/14)
 ├── chunks.py                ← découpage borné + contextualisation + ingestion (Lot C)
-├── vectors.py               ← vecteurs locaux déterministes + RRF (Lot C, sans modèle externe)
-└── (tests) backend/tests/test_search.py (Lot A) + test_search_bc.py (Lots B/C)
+├── vectors.py               ← ColBERT late interaction + fusion RRF (Lot C)
+└── (tests) tests/backend/test_search.py (Lot A) + test_search_bc.py (Lots B/C)
 
 Branches :
-├── backend/tools/search_documents.py + document_card.py + read_document.py (façades Pydantic)
-├── backend/tools/registry.py         ← registre à 7 outils
-├── backend/inference/loop.py         ← 3 exécuteurs + record après chaque tool + get_source sans chemin
+├── backend/tools/search_documents.py + read_document.py (façades Pydantic)
+├── backend/tools/registry.py         ← registre à 10 outils
+├── backend/inference/loop.py         ← exécuteurs + record après chaque tool
 ├── backend/prompts/orchestrator.py   ← workflow chercher→choisir→ouvrir→lire, fiche≠preuve, anti-injection
-└── backend/db/ (models.py + database.py) ← colonnes annexe 11 + ArtifactChunk + migration + DDL FTS/vecteurs
+└── backend/db/ (models.py + database.py) ← colonnes de la décision interne + ArtifactChunk + migration + DDL FTS/vecteurs
 ```
 
-## 2. Mapping annexe 11 → existant → Lot A
+## 2. Architecture réelle : FTS5 + ColBERT, fusion RRF
+
+La recherche de Phase 1 ne repose **pas** sur le seul FTS5, et n'utilise **pas** de "vecteurs déterministes" (frappe lexicale signée). Elle combine trois signaux, chacun servi par sa propre voie, fusionnés par Reciprocal Rank Fusion (RRF, k=60) :
+
+| signal | voie | répond à |
+|---|---|---|
+| FTS document (BM25) | `fts.py` sur `artifacts` / `artifact_cards` (index FTS `artifact_search`) | « quel nom contient ce fichier ? » |
+| FTS par fragment (BM25) | `fts.py` sur `artifact_chunks` (index FTS `chunk_search`) | « quels mots contient ce passage ? » |
+| ColBERT (late interaction) | `vectors.py` `search_vectors()` | « de quoi parle ce fragment, quels que soient les mots ? » |
+
+**ColBERT** (`backend/search/vectors.py`) : un modèle `LFM2.5-ColBERT-350M` chargé **une fois, résident** (685 Mio VRAM en bf16, jamais déchargé entre deux requêtes). Contrairement à un encodeur de phrase qui réduit un document à un seul vecteur, ColBERT conserve **un vecteur par jeton** (128 dimensions par jeton, projection 1024→128 via la tête dense `1_Dense`). Le score est un MaxSim :
 
 ```
-Concept annexe 11              Existant Phase 1                    Lot A (ce dossier)
-─────────────────────────────  ──────────────────────────────────  ─────────────────────────────
-Blob / Artifact /              models.py OK, créés par            inchangé (source de vérité)
-  ArtifactLink /                 Rust attachments_prepare
-  MessageAttachment
-ArtifactCard versionnée        modèle minimal (revision,           colonnes annexe 11 (title,
-  (is_current, title,             summary, capabilities,             keywords/entities, doc_type,
-   keywords, status...)           quality, status)                   analysis_status, is_current...)
-  → ensure_card_on_import      ABSENT                              cards.py (lazy self-healing :
-  → revise après observation   ABSENT                               Rust crée l'Artifact, Python
-                                                                    assure la fiche au 1er contact)
-Observation persistée          modèle minimal, JAMAIS               observations.py : écriture
-  après chaque tool              écrite (résultats en               systématique vision/doc_ocr/
-                                 mémoire du tour seulement)         read_text/get_source/search
-Index FTS5                     ABSENT                              fts.py (unicode61 sans
-                                                                    diacritiques, fiche active
-                                                                    + aperçu borné, jamais blob)
-search_documents               ABSENT                              tools/search_documents.py
-  (scope, types, status,                                          (query≤300, limit≤20,
-   limit≤20, cursor)                                               scope=conversation Lot A)
-get_source compat limitée      list-all TOUT (≤50) +               ≤20 récents + renvoi vers
-                                 working_path AU LLM               search_documents ; métadonnées
-                                                                   SANS working_path au LLM
-Scope-check avant retrieval    C18 partiel (vision artifact)       scope.py : allowed AVANT FTS,
-                                                                   ARTIFACT_NOT_IN_SCOPE sans
-                                                                   révéler l'existence
+score(requête, document) = Σ_sur_jetons_de_la_requête  max_sur_jetons_du_document(q_i · d_j)
 ```
 
-## 3. Pseudo-code Lot A
+Chaque jeton de la requête choisit le jeton du document qui lui ressemble le plus ; la somme de ces meilleurs appariements classe. Cela permet d'apparier « livraison » (document) avec « expédier » (requête) là où un vecteur unique par phrase se noie.
+
+Le format persistant est auto-descriptif (en-tête `THOTC`, dim=128, nb de jetons) : un ancien vecteur de frappe lexicale (256 flottants, aucun en-tête) est refusé par `unpack_vectors`. Rien ne se réindexe tout seul : `detecter_vecteurs_obsoletes()` constate en lecture seule, et `reindexer_vecteurs(..., appliquer=False)` par défaut ne réécrit rien tant qu'on ne demande pas explicitement `appliquer=True`. La requête est encodée avec le préfixe `[Q] `, le document avec `[D] `.
+
+**Fusion** : `fts.py` appelle `rrf_fuse()` sur les listes classées (FTS document, FTS fragment, ColBERT) pour produire le classement final. Le filtre de portée (`scope.py`, liens actifs de la conversation) est appliqué **dans la lecture SQL** avant tout décodage de vecteur — un artefact hors périmètre n'est jamais décodé, donc jamais compté, donc jamais susceptible d'influer sur un rang.
+
+## 3. Pseudo-code (comment c'est fait)
 
 ```
-# Import (Rust crée Artifact/ArtifactLink ; Python assure la fiche en paresseux)
+# Import (Electron crée Artifact/ArtifactLink ; Python assure la fiche en paresseux)
 SUR premier contact avec artifact SANS fiche courante :
   ensure_card_on_import(artifact) :
-    fiche rev 1 = {title: nom fichier, summary: "importé ; non analysé",
-                   keywords: [stem du nom], document_type: kind,
-                   capabilities: ["ocr"] si pdf/image, ["text_search"] si texte,
-                   analysis_status: "pending", is_current: true}
+    fiche rev 1 = {title, summary, keywords, document_type, capabilities, analysis_status: "pending", is_current: true}
     indexer la fiche (fts.index_card)
 
-# Après chaque tool (vision/doc_ocr/read_text/get_source/search_documents)
+# Après chaque tool (vision/doc_ocr/read_text/read_document/search_documents)
 record_tool_observation(artifact_id, tool, query, result, run_id, tool_call_id) :
-  Observation IMMUABLE {input_fingerprint: sha(blob+outil+modèle+params+query), status, excerpt}
-  revise_card_after_observation(...) :
-    fiche N+1 (titre/summary/keywords prudents : "OCR partiel", "probablement…")
-    N.is_current=false, N+1.is_current=true, réindexer (désindexer N, indexer N+1)
-  → réutilisable SSI même artifact + même sha + capacité compatible + question couverte
+  Observation IMMUABLE {input_fingerprint: sha(...), status, excerpt}
+  revise_card_after_observation(...) : fiche N+1, N.is_current=false, N+1.is_current=true, réindexer
 
 # Recherche (exécuteur search_documents)
 execute_search_documents(args, run_scope) :
@@ -84,9 +72,12 @@ execute_search_documents(args, run_scope) :
   allowed = resolve_allowed_artifacts(conv_id)          # LIENS ACTIFS D'ABORD
   SI artifact demandé hors allowed → ARTIFACT_NOT_IN_SCOPE (sans confirmer l'existence)
   normaliser query (NFC, minuscules, diacritiques) MAIS journaliser l'originale
-  candidats = FTS5 MATCH(filename/title/summary/keywords/entities/preview)
-              FILTRÉ allowed + types + status, max 50
-  score = 4×filename + 3×title + 2×keywords/entities + 1.5×summary + 1×extrait + 0.2×récence
+  fts_document  = FTS5 MATCH(filename/title/summary/keywords/entities/preview)   → liste classée
+  fts_fragment  = FTS5 MATCH sur artifact_chunks                                   → liste classée
+  colbert       = search_vectors(session, query, allowed_ids)                      → MaxSim → liste classée
+                 (le moteur est sondé AVANT toute lecture SQL ; s'il est absent,
+                  le FTS lexical reste servi et statut_moteur() dit pourquoi)
+  fusion = rrf_fuse([fts_document, fts_fragment, colbert], k=60)
   page stable (cursor = base64{query_hash, filtres, scope, offset}) ; 0 résultat = suggestions,
     JAMAIS "le fichier n'existe pas" → "pas retrouvé dans le périmètre consulté"
 ```
@@ -94,31 +85,38 @@ execute_search_documents(args, run_scope) :
 ## 4. Schéma ASCII
 
 ```
-                 ┌──────────────────────────────────────────────┐
-                 │  HORS PROMPT (jamais au LLM)                 │
-                 │  catalogue · blobs · fiches · index · droits │
-                 └──────────────────────┬───────────────────────┘
-                                        │ tool_call structuré
-                                        ▼
-                 ┌──────────────────────────────────────────────┐
-                 │ scope.py : allowed = liens actifs (conv)     │ ◀── ÉTAPE 0, avant FTS
-                 └──────────────────────┬───────────────────────┘
-                                        ▼
-   question ──▶ search_documents ──▶ FTS5 (50 max, filtrés) ──▶ score déterministe
-      │              (5-10 au LLM)         │ filename×4 > title×3 > kw×2 > summary
-      │                                   ▼
-      │                            get_document_card (fiche, SANS contenu/chemin)
-      │                                   ▼
-      │                            read/vision/ocr ciblé → Observation → fiche N+1
-      │                                   ▼
-      └────────────────────── brief + evidence_ids ──▶ Générateur ──▶ réponse
+                  ┌──────────────────────────────────────────────┐
+                  │  HORS PROMPT (jamais au LLM)                 │
+                  │  catalogue · blobs · fiches · index · droits │
+                  └──────────────────────┬───────────────────────┘
+                                         │ tool_call structuré
+                                         ▼
+                  ┌──────────────────────────────────────────────┐
+                  │ scope.py : allowed = liens actifs (conv)     │ ◀── ÉTAPE 0, avant FTS
+                  └──────────────────────┬───────────────────────┘
+                                         ▼
+    question ──▶ search_documents ─────┬──▶ FTS5 document (BM25) ──┐
+                                       │                           │
+                                       ├─▶ FTS5 fragment (BM25) ───┼─▶ rrf_fuse (k=60) ──▶ classement final
+                                       │                           │
+                                       └─▶ ColBERT MaxSim ─────────┘
+              (128 dim/jeton, un vecteur par jeton, résident 685 Mio)
+                                         │
+                                         ▼
+                                read_document (fiche + extrait borné, jamais de chemin)
+                                         │
+                                         ▼
+                                read/vision/ocr ciblé → Observation → fiche N+1
+                                         │
+                                         ▼
+                         brief + evidence_ids ──▶ Générateur ──▶ réponse
 ```
 
 ## 5. Tests (T-SRCH — Lots A + B + C livrés)
 
 Lot A (`test_search.py`) : `01` fiche minimale · `02` OCR→observation→fiche N+1 · `03` historique ·
 `04` sans accents · `05` filtres · `06` scope strict · `07` id deviné refusé ·
-`09` zéro borné · `10` raisons de match · `15` sans embeddings · `17` parité · curseur · get_source limitée.
+`09` zéro borné · `10` raisons de match · `15` ColBERT présent · `17` parité · curseur · lecture limitée portée par `read_document` (`get_source` retiré).
 Lot B/C (`test_search_bc.py`) : `08` volume 300 + pagination stable · `11` read_document→evidence
 (`page:N` OCR, `offset:N`)/`12` injection→donnée seule · `13` corbeille/restore · `14` purge GC ·
 `16` droits AVANT hybride · hybride sans régression · workspace prêt (couche scope/fts, actif Phase 5).
@@ -132,5 +130,5 @@ Lot B/C (`test_search_bc.py`) : `08` volume 300 + pagination stable · `11` read
 - Evidence sans table dédiée : `obs_…` (extrait d'analyse) ou `blob:{sha}:chars:a-b` (texte brut).
 - Workspace : couches scope/fts prêtes ; l'exécuteur refuse `scope=workspace` tant que les espaces
   (Phase 5) ne fournissent pas le workspace du run.
-- Hybride : ingestion chunks bornée (50/artefact, texte ≥200 car.) ; fusion auto seulement si
+- Hybride : ingestion chunks bornée (50/artefact, textes vides ignorés) ; fusion auto seulement si
   chunks indexés dans le scope, sinon lexical pur. Reranker = blend déterministe, pas un LLM.

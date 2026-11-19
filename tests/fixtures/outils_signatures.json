@@ -1,0 +1,57 @@
+{
+  "_objet": "Signature attendue des six outils dont la fiche fixe le contrat : ce que le modèle doit pouvoir appeler, sous le nom exact que la fiche écrit.",
+  "_source": "Chaque ligne est la lecture de la fiche citée dans « fiche », tableau des arguments (§ Signature proposée). Aucun nom n'est déduit du code : c'est l'inverse qui est vérifié.",
+  "_types": "Vocabulaire volontairement fermé : string, array, integer, object. Un type de fiche qui n'y tombe pas est un défaut de la table, pas une divergence de code.",
+  "_ecarts": "Les divergences entre cette table et le code livré sont déclarées dans tests/backend/test_contrat_outils.py::_ECARTS_CONNUS, avec la phase du plan qui les ferme. Une divergence non déclarée y fait échouer la suite.",
+  "outils": {
+    "search_info": {
+      "fiche": "docs/intentions/outils/search_info.md",
+      "arguments": [
+        {"nom": "queries", "type": "array", "requis": true},
+        {"nom": "types", "type": "array", "requis": false},
+        {"nom": "recency", "type": "string", "requis": false}
+      ]
+    },
+    "find_files": {
+      "fiche": "docs/intentions/outils/find_files.md",
+      "arguments": [
+        {"nom": "query", "type": "string", "requis": false},
+        {"nom": "types", "type": "array", "requis": false},
+        {"nom": "recency", "type": "string", "requis": false}
+      ]
+    },
+    "ask_files": {
+      "fiche": "docs/intentions/outils/ask_files.md",
+      "arguments": [
+        {"nom": "questions", "type": "array", "requis": true},
+        {"nom": "resource_ids", "type": "array", "requis": true},
+        {"nom": "scope", "type": "object", "requis": false}
+      ]
+    },
+    "web_research": {
+      "fiche": "docs/intentions/outils/web_research.md",
+      "arguments": [
+        {"nom": "queries", "type": "array", "requis": true},
+        {"nom": "purpose", "type": "string", "requis": true},
+        {"nom": "freshness", "type": "string", "requis": false}
+      ]
+    },
+    "generate_image": {
+      "fiche": "docs/intentions/outils/generate_image.md",
+      "arguments": [
+        {"nom": "prompt", "type": "string", "requis": true},
+        {"nom": "operation", "type": "string", "requis": false},
+        {"nom": "aspect_ratio", "type": "string", "requis": false},
+        {"nom": "seed", "type": "integer", "requis": false},
+        {"nom": "source_image_id", "type": "string", "requis": false},
+        {"nom": "reference_ids", "type": "array", "requis": false}
+      ]
+    },
+    "submit_brief": {
+      "fiche": "docs/intentions/outils/submit_brief.md",
+      "arguments": [
+        {"nom": "brief", "type": "string", "requis": true}
+      ]
+    }
+  }
+}

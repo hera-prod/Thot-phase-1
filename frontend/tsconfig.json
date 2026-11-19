@@ -10,12 +10,20 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noEmit": true,
+    "types": ["node"],
+    "typeRoots": ["./node_modules/@types", "./node_modules"],
     "jsx": "react-jsx",
     "strict": true,
     "noUnusedLocals": false,
     "noUnusedParameters": false,
     "noFallthroughCasesInSwitch": true,
-    "forceConsistentCasingInFileNames": true
+    "forceConsistentCasingInFileNames": true,
+    "paths": {
+      "@/*": ["./src/*"],
+      "vite": ["./node_modules/vite/dist/node/index.d.ts"],
+      "vite/client": ["./node_modules/vite/client.d.ts"],
+      "*": ["./node_modules/@types/*", "./node_modules/*"]
+    }
   },
-  "include": ["src"]
+  "include": ["src", "../tests/frontend"]
 }

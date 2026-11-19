@@ -1,0 +1,37 @@
+appId: com.thot.app
+productName: Thot
+# choix : Thot (nom produit) — cohérent avec StartupWMClass et le bureau
+executableName: Thot
+directories:
+  output: release
+  buildResources: build
+files:
+  - "electron/**/*"
+  - "frontend/dist/**/*"
+  - "package.json"
+  - "!dist/**"
+  - "!models/**"
+  - "!build/**"
+  - "!release/**"
+  - "!tests/**"
+  - "!docs/**"
+  - "!**/*.AppImage"
+  - "!**/node_modules/**/{test,__tests__,tests,example,examples,docs}/**"
+  - "!**/*.md"
+asar: true
+linux:
+  target:
+    - target: AppImage
+      arch: [x64]
+  category: Utility
+  icon: frontend/public/assets/brand/Thot_logo_fond-blanc.png
+  desktop:
+    entry:
+      Name: Thot
+      Comment: Assistant conversationnel local
+      Categories: Utility;
+      StartupWMClass: Thot
+      Terminal: false
+      Type: Application
+appImage:
+  artifactName: "Thot-${version}-${arch}.${ext}"

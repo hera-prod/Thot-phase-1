@@ -1,17 +1,51 @@
-# Thot Phase 1 — pyproject.toml (PyInstaller, pas de venv)
-# Build : pip install puis pyinstaller --onedir (pas de uv, pas de .venv)
-# Le sidecar Python est packagé en binaire autonome
+# Thot Phase 1 — pyproject.toml (PyInstaller)
+# Installation via pip (requirements.txt) : le venv .venv est créé au premier
+# lancement par les lanceurs (lancer-linux.sh / lancer-macos.command / lancer-windows.bat).
+# Le sidecar Python est packagé en binaire autonome (pyinstaller --onedir).
+#
+# Pas de [build-system] volontaire : `pip install .` n'est PAS supporté — seul
+# `pip install -r requirements.txt` l'est. Ce manifeste sert de référence de
+# versions et de configuration pytest/pyinstaller, pas de paquet installable.
 
 [project]
 name = "thot-phase-1"
 version = "1.0.0"
-description = "Thot Phase 1 — Chat + Agent loop (LFM2.5-8B + GLM-OCR + VL-3B)"
+description = "Thot Phase 1 — Chat + Agent loop (LFM2.5-8B + PaddleOCR-VL + VL-3B)"
 requires-python = ">=3.11"
 dependencies = [
-    "llama-cpp-python>=0.3.0",  # installer avec : pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu121
+    "llama-cpp-python==0.3.34",  # figé — version testée 18/09 (ne pas passer en >= sans requalifier)
     "sqlalchemy>=2.0",
     "pymupdf>=1.24",
     "pillow>=10.0",
+    "torch==2.13.0",
+    "torchvision==0.28.0",
+    "diffusers==0.39.0",
+    "gguf==0.19.0",
+    "safetensors==0.8.0",
+    "tokenizers==0.22.2",
+    "jinja2==3.1.6",
+    "psutil==5.9.8",
+    # Recherche sémantique ColBERT (`backend/search/vectors.py`). `transformers`
+    # était déjà importé par le dépôt (PaddleOCR-VL, encodeur FLUX) sans être
+    # DÉCLARÉ — donc absent d'une installation faite depuis ce fichier. Déclaré ici
+    # pour cette raison autant que pour ColBERT. La borne `>=4.56` vient du worker
+    # PaddleOCR-VL, pas de la tâche 2.5 : le modèle ColBERT exige 4.56+ pour les
+    # patches bidirectionnels de `transformers.models.lfm2`.
+    "transformers>=4.56,<6",
+    # `from_pretrained` en dépend. Le modèle est lu dans `models/`, jamais sur le
+    # hub, mais la bibliothèque est requise au chargement.
+    "huggingface_hub>=0.34",
+    # Tableurs — MÊME liste que requirements.txt, sans quoi les deux manifests
+    # divergent et l'une des deux installations produit un Thot qui lit mal les
+    # classeurs. `odfpy` est le moteur .ods de pandas : sans lui, un .ods est
+    # renvoyé vide et passe pour une ingestion réussie.
+    "openpyxl>=3.1",
+    "pandas>=2.0",
+    "odfpy>=1.4",
+    # Parseur XML durci (xlsx/ods). Sans lui, Thot REFUSE le flux XML d'un
+    # classeur au lieu de laisser la stdlib expanser DTD/entités : un refus
+    # borné par position ne suffit pas (voir `sheets._iterparse_xml`).
+    "defusedxml>=0.7",
     "pyinstaller>=6.0",  # pour packager le sidecar
 ]
 
@@ -19,9 +53,12 @@ dependencies = [
 dev = ["pytest>=8.0"]
 
 [tool.pytest.ini_options]
-testpaths = ["backend/tests"]
+testpaths = ["tests/backend"]
 pythonpath = ["."]
+addopts = ["-m", "not slow"]
+markers = [
+    "slow: tests requiring GPU/VRAM or worker persistant (exclus du run courant)",
+    "scenario: scénarios fonctionnels exécutables sous tests/backend/scenarios",
+]
 
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+

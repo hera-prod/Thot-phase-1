@@ -1,22 +1,26 @@
 {
   "name": "thot-phase-1",
+  "version": "1.0.0",
   "private": true,
-  "type": "module",
+  "main": "electron/main.cjs",
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "scripts": {
-    "dev": "vite --port 1420",
-    "build": "tsc --noEmit && vite build",
-    "tauri": "tauri",
-    "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "dev": "node scripts/start-electron.mjs --dev",
+    "dev:web": "npm --prefix frontend run dev",
+    "build": "npm --prefix frontend run build",
+    "start": "node scripts/start-electron.mjs",
+    "test:electron": "node --test tests/electron/",
+    "dist": "npm run build && electron-builder --linux AppImage --x64",
+    "dev:preflight": "node scripts/dev-preflight.mjs",
+    "depot:verifier": "THOT_PORTABLE=1 python3 -m backend.services.depot_integrite",
+    "depot:reparer": "THOT_PORTABLE=1 python3 -m backend.services.depot_integrite --reparer",
+    "depot:gc": "THOT_PORTABLE=1 python3 -m backend.services.depot_integrite --gc"
   },
-  "dependencies": {
-    "react": "^19.2.8",
-    "react-dom": "^19.2.8"
-  },
+  "dependencies": {},
   "devDependencies": {
-    "@tauri-apps/cli": "^2.11.4",
-    "@tauri-apps/api": "^2.11.1",
-    "vite": "^8.1.5",
-    "typescript": "^7.0.2"
+    "electron": "^44.5.0",
+    "electron-builder": "^26.18.1"
   }
 }

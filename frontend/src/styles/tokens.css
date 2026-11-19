@@ -1,130 +1,144 @@
+@font-face {
+  font-family: "Manrope";
+  src: url("/fonts/manrope-400.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Manrope";
+  src: url("/fonts/manrope-500.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Manrope";
+  src: url("/fonts/manrope-600.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Manrope";
+  src: url("/fonts/manrope-700.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
-  --thot-canvas: #F7F5F0;
-  --thot-surface: #FCFBF8;
-  --thot-surface-raised: #FFFFFF;
-  --thot-surface-1: #FFFFFF;
-  --thot-surface-2: #FAF8F4;
-  --thot-surface-subtle: #FAF8F4;
-  --thot-sidebar-bg: #F1EFE9;
+  color-scheme: light;
 
-  --thot-border: #E9E5DD;
-  --thot-border-subtle: #F1EEE8;
-  --thot-border-strong: #D8D3C9;
+  --thot-ink: #1B1815;
+  --thot-ink-soft: #2B241E;
+  --thot-ivory: #F5F0E7;
 
-  --thot-text: #1F2022;
-  --thot-text-muted: #6E6A62;
-  --thot-text-faint: #9A958C;
+  --thot-canvas: #F3EFE7;
+  --thot-surface: #FAF7F0;
+  --thot-surface-raised: #FFFDF8;
+  --thot-surface-1: #FFFCF6;
+  --thot-surface-2: #F0EBE2;
+  --thot-surface-subtle: #F6F2EA;
+  --thot-sidebar-bg: #1B1815;
+  --thot-sidebar-raised: #27211B;
+  --thot-sidebar-border: rgba(232, 194, 143, 0.16);
+  --thot-sidebar-text: #F7EEDF;
+  --thot-sidebar-muted: #B8AA98;
+  --thot-sidebar-faint: #A69580;
 
-  --thot-gold: #B89452;
-  --thot-gold-hover: #9C7842;
-  --thot-gold-soft: #F1E7D2;
+  --thot-border: #DED6C9;
+  --thot-border-subtle: #EAE3D8;
+  --thot-border-strong: #C6B9A8;
 
-  --thot-violet: #7046D8;
-  --thot-violet-soft: #F0EBFE;
+  --thot-text: #29241E;
+  --thot-text-muted: #6B6257;
+  --thot-text-faint: #74695C;
 
-  --thot-success: #1F9D57;
-  --thot-success-soft: #E3F4E9;
-  --thot-info: #2F6FED;
-  --thot-info-soft: #E7EEFD;
-  --thot-warning: #C7973F;
-  --thot-danger: #C5534A;
-  --thot-danger-soft: #FBEAE9;
+  --thot-copper: #B86B3D;
+  --thot-copper-hover: #98512D;
+  --thot-copper-soft: #F2E1D2;
+  --thot-accent: var(--thot-copper);
+  --thot-accent-hover: var(--thot-copper-hover);
+  --thot-accent-soft: var(--thot-copper-soft);
+  --thot-gold: #95502A;
+  --thot-gold-hover: #7D4223;
+  --thot-gold-soft: #F3E4D2;
+  --thot-gold-light: #E0A56B;
+  --thot-gold-pale: #F8EBDD;
 
-  --thot-font-family: "Manrope", -apple-system, sans-serif;
-  --thot-font-mono: ui-monospace, "JetBrains Mono", Menlo, monospace;
+  --thot-violet: var(--thot-gold);
+  --thot-violet-soft: var(--thot-gold-soft);
 
-  --thot-text-hero: 40px;
-  --thot-text-page-title: 30px;
-  --thot-text-section: 18px;
-  --thot-text-body: 14px;
-  --thot-text-small: 12px;
-  --thot-text-sidebar-item: 15px;
-  --thot-text-logo: 22px;
+  --thot-success: #2E7652;
+  --thot-success-soft: #E2F0E7;
+  --thot-info: #3E6D7A;
+  --thot-info-soft: #E2EEF0;
+  --thot-warning: #8D551E;
+  --thot-danger: #A4473B;
+  --thot-danger-soft: #F8E5E1;
 
-  --thot-radius-sm: 8px;
-  --thot-radius-md: 12px;
-  --thot-radius-lg: 16px;
-  --thot-radius-xl: 24px;
+  --thot-font-display: "Fraunces", "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+  /* Police Manrope embarquée localement sous public/fonts/ (@font-face ci-dessus,
+     licence OFL) : aucun accès réseau au premier rendu, usage hors ligne garanti.
+     La stack de repli reste nécessaire si les woff2 locaux sont absents. */
+  --thot-font-family: "Manrope", "Avenir Next", "Trebuchet MS", sans-serif;
+  --thot-font-mono: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+
+  --thot-text-hero: clamp(2.25rem, 4vw, 3.5rem);
+  --thot-text-page-title: clamp(1.65rem, 3vw, 2.25rem);
+  --thot-text-section: 1.125rem;
+  --thot-text-body: 0.875rem;
+  --thot-text-small: 0.75rem;
+  --thot-text-sidebar-item: 0.8125rem;
+  --thot-text-logo: 1.375rem;
+
+  --thot-radius-sm: 0.375rem;
+  --thot-radius-md: 0.625rem;
+  --thot-radius-lg: 0.875rem;
+  --thot-radius-xl: 1.125rem;
   --thot-radius-pill: 999px;
-  --thot-radius-window: 16px;
-  --thot-radius-space-card: 20px;
+  --thot-radius-window: 0.5rem;
+  --thot-radius-space-card: 1.125rem;
 
-  --thot-shadow-card: 0 1px 2px rgba(31,32,34,.04), 0 4px 16px rgba(31,32,34,.05);
-  --thot-shadow-float: 0 8px 32px rgba(31,32,34,.10);
+  --thot-shadow-card: 0 1px 2px rgba(43, 36, 30, 0.05), 0 10px 28px rgba(43, 36, 30, 0.06);
+  --thot-shadow-float: 0 14px 40px rgba(43, 36, 30, 0.14);
+  --thot-shadow-sidebar: 0 18px 48px rgba(10, 8, 6, 0.20);
+  --thot-shadow-focus: 0 0 0 3px color-mix(in srgb, var(--thot-copper) 30%, transparent);
+  --thot-shadow-image: 0 18px 50px rgba(50, 31, 18, 0.16);
+  --thot-shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.42);
 
-  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px;
-  --space-5: 20px; --space-6: 24px; --space-8: 32px; --space-10: 40px; --space-12: 48px;
+  --space-0: 0;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 28px;
+  --space-8: 32px;
+  --space-9: 36px;
+  --space-10: 40px;
+  --space-11: 44px;
+  --space-12: 48px;
+  --space-14: 56px;
+  --space-16: 64px;
+  --thot-space-gutter: clamp(1rem, 3vw, 2rem);
 
-  --thot-transition-fast: 150ms ease;
-  --thot-active-scale: 0.98;
+  --thot-sidebar-width: 224px;
+  --thot-sidebar-collapsed-width: 72px;
+  --thot-sidebar-mobile-width: 64px;
+  --thot-content-max: 1240px;
+  --thot-shell-max: 1920px;
+  --thot-breakpoint-mobile: 720px;
+  --thot-breakpoint-tablet: 1040px;
+  --thot-breakpoint-wide: 1440px;
 
+  --thot-transition-fast: 160ms cubic-bezier(0.22, 1, 0.36, 1);
+  --thot-transition-base: 240ms cubic-bezier(0.22, 1, 0.36, 1);
+  --thot-active-scale: 0.985;
   --motion-fast: 160ms;
   --motion-normal: 220ms;
+  --motion-slow: 620ms;
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-*,
-*::before,
-*::after {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
-}
-
-html, body, #root {
-  height: 100%;
-  width: 100%;
-  overflow: hidden;
-}
-
-body {
-  font-family: var(--thot-font-family);
-  font-size: var(--thot-text-body);
-  color: var(--thot-text);
-  background: var(--thot-canvas);
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
-
-:focus-visible {
-  outline: 2px solid var(--thot-gold);
-  outline-offset: 2px;
-}
-
-.enterSoft {
-  animation: enterSoft var(--motion-normal) var(--ease-out);
-}
-
-@keyframes enterSoft {
-  from { opacity: 0; transform: translateY(4px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-.spinner {
-  width: 14px;
-  height: 14px;
-  border: 2px solid color-mix(in srgb, var(--thot-gold) 25%, transparent);
-  border-top-color: var(--thot-gold);
-  border-radius: 50%;
-  animation: spin 800ms linear infinite;
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
-
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.45; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-    scroll-behavior: auto !important;
-  }
 }

@@ -1,0 +1,36 @@
+/* Filigrane de l'accueil.
+   Paysage : plein écran, ancré à droite de la fenêtre.
+   Fenêtre verticale : il se centre dans la bande libre entre les
+   conversations récentes et le pied de page, pour ne pas laisser un vide. */
+.homeWatermarkSlot {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  pointer-events: none;
+}
+
+.homeWatermark {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: var(--thot-sidebar-width);
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  /* `object-position` s'applique AVANT `scaleX(-1)` :
+     « left » est ce qui rend la figure à droite une fois le miroir appliqué. */
+  object-position: left bottom;
+  transform: scaleX(-1);
+  opacity: 0.05;
+  user-select: none;
+  z-index: 0;
+}
+
+@media (max-aspect-ratio: 1/1) {
+  .homeWatermark {
+    position: absolute;
+    inset: 0;
+    object-position: left center;
+  }
+}

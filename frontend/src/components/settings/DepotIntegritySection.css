@@ -1,0 +1,245 @@
+/* Thot Phase 1 — Intégrité des dépôts, dans les Réglages.
+ *
+ * Les couleurs sont reprises de `.set-page` (encre, cuivre, or, terre) : une
+ * section d'un écran ne doit pas avoir sa propre palette, elle doit parler la
+ * langue de l'écran où elle vit. Les variables y sont définies par la page, ce
+ * fichier ne les redéfinit pas — il en hérite.
+ *
+ * Le dialogue reprend la mécanique visuelle du dialogue de suppression de la
+ * galerie (fond assombri, carte centrée, retour sur le clic du fond) mais pas
+ * sa couleur d'alerte : rien ici n'est destructif, et un fond rouge ferait
+ * sur-appréhender une réparation qui répare.
+ */
+
+.set-depot-espaces {
+  display: grid;
+  gap: .5rem;
+  margin: .9rem 0 1.1rem;
+  padding: 0;
+  list-style: none;
+}
+
+.set-depot-espace {
+  padding: .7rem .9rem;
+  border: 1px solid var(--set-line);
+  border-left: 3px solid var(--set-copper);
+  border-radius: 4px;
+  background: rgba(255, 253, 247, .72);
+}
+
+.set-depot-espace-tete {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: .5rem;
+}
+
+.set-depot-espace-nom {
+  font-family: "Fraunces", Georgia, serif;
+  font-size: 1rem;
+  color: var(--set-ink);
+  letter-spacing: -.01em;
+}
+
+.set-depot-espace-compte {
+  font-size: .78rem;
+  color: var(--set-ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.set-depot-anomalies {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .35rem;
+  margin: .45rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.set-depot-anomalies li {
+  padding: .12rem .5rem;
+  border: 1px solid var(--set-line);
+  border-radius: 999px;
+  background: var(--set-paper);
+  font-size: .76rem;
+  color: var(--set-ink-soft);
+}
+
+/* « À réessayer » est une action située (le dépôt de l'espace), pas une
+   réparation : le lien y mène, plutôt qu'un bouton aveugle depuis les Réglages. */
+.set-depot-reessai {
+  margin: .55rem 0 0;
+  font-size: .8rem;
+  line-height: 1.45;
+  color: var(--set-ink-soft);
+}
+
+.set-depot-reessai a {
+  color: var(--set-copper-dark);
+  text-decoration: underline;
+}
+
+.set-depot-diagnostics {
+  margin: .5rem 0 0;
+  padding-left: 1.1rem;
+  font-size: .82rem;
+  color: var(--set-ink-soft);
+}
+
+/* Le bouton de réparation est l'action la plus visible de la section, mais pas
+   un geste dangereux : cuivre plein, pas rouge. */
+.set-button {
+  padding: .55rem 1.05rem;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  font: inherit;
+  font-size: .88rem;
+  cursor: pointer;
+  transition: background-color .12s ease, border-color .12s ease;
+}
+
+.set-button:disabled {
+  opacity: .55;
+  cursor: default;
+}
+
+.set-button-reparer {
+  border-color: var(--set-copper-dark);
+  background: var(--set-copper);
+  color: var(--set-paper);
+}
+
+.set-button-reparer:hover:not(:disabled) {
+  background: var(--set-copper-dark);
+}
+
+.set-button-calme {
+  border-color: var(--set-line);
+  background: transparent;
+  color: var(--set-ink);
+}
+
+.set-button-calme:hover:not(:disabled) {
+  background: rgba(167, 101, 63, .09);
+}
+
+.set-source.is-alerte {
+  color: var(--set-copper-dark);
+  border-color: var(--set-copper);
+}
+
+/* ------------------------------------------------------------------ dialogue */
+
+.set-modal-backdrop {
+  position: fixed;
+  z-index: 40;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 1.5rem;
+  background: rgba(32, 37, 34, .42);
+}
+
+.set-modal {
+  width: min(34rem, 100%);
+  max-height: 85vh;
+  overflow: auto;
+  border: 1px solid var(--set-line);
+  border-radius: 6px;
+  background: var(--set-paper);
+  box-shadow: 0 18px 48px rgba(32, 37, 34, .28);
+}
+
+.set-modal-head {
+  padding: 1.1rem 1.3rem .8rem;
+  border-bottom: 1px solid var(--set-line);
+}
+
+.set-modal-head h2 {
+  margin: .15rem 0 0;
+  font-family: "Fraunces", Georgia, serif;
+  font-size: 1.22rem;
+  color: var(--set-ink);
+  letter-spacing: -.02em;
+}
+
+.set-modal-body {
+  padding: 1rem 1.3rem;
+}
+
+.set-modal-intro {
+  margin: 0 0 .9rem;
+  font-size: .9rem;
+  line-height: 1.55;
+  color: var(--set-ink);
+}
+
+.set-modal-sous-titre {
+  margin: .9rem 0 .35rem;
+  font-size: .74rem;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  color: var(--set-ink-soft);
+}
+
+.set-modal-sous-titre:first-of-type {
+  margin-top: .2rem;
+}
+
+.set-depot-lignes {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--set-line);
+  border-radius: 4px;
+  background: rgba(255, 253, 247, .8);
+}
+
+.set-depot-ligne {
+  display: flex;
+  gap: .6rem;
+  padding: .4rem .65rem;
+  font-size: .82rem;
+  border-bottom: 1px solid var(--set-line);
+}
+
+.set-depot-ligne:last-child {
+  border-bottom: 0;
+}
+
+.set-depot-ligne-type {
+  flex: 0 0 auto;
+  font-size: .72rem;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--set-copper-dark);
+}
+
+.set-depot-ligne-nom {
+  overflow-wrap: anywhere;
+  color: var(--set-ink-soft);
+}
+
+.set-modal-note {
+  margin: .7rem 0 0;
+  font-size: .82rem;
+  line-height: 1.5;
+  color: var(--set-ink-soft);
+}
+
+/* La phrase qui tient tout le dialogue : ce qu'il ne faut PAS qu'on croie. */
+.set-modal-note-fort {
+  padding-top: .7rem;
+  border-top: 1px dashed var(--set-line);
+  color: var(--set-ink);
+  font-weight: 600;
+}
+
+.set-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: .55rem;
+  padding: .9rem 1.3rem 1.1rem;
+  border-top: 1px solid var(--set-line);
+}

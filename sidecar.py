@@ -1,4 +1,13 @@
-# Wrapper pour PyInstaller — évite le problème `No module named 'backend'` quand on build backend/main.py directement
-# Ce fichier est à la racine Thot-phase-1/, donc `backend` est un package top-level trouvable avec pathex=.
-import backend.main  # noqa: F401 — force PyInstaller à collecter tout le package backend
-from backend.main import *  # noqa: F401,F403
+import runpy
+import sys
+from pathlib import Path
+
+_ROOT = Path(__file__).resolve().parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+if "--image-worker" in sys.argv[1:]:
+    sys.argv = [sys.argv[0], *[arg for arg in sys.argv[1:] if arg != "--image-worker"]]
+    runpy.run_module("backend.image_engine.spike_t2i", run_name="__main__")
+else:
+    runpy.run_module("backend.main", run_name="__main__")

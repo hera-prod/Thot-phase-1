@@ -3,7 +3,7 @@ import { Dismiss24Regular, CheckmarkCircle24Regular, ErrorCircle24Regular, Info2
 
 export interface ToastData {
   id: string;
-  type: 'success' | 'error' | 'info';
+  type: 'success' | 'error' | 'info' | 'warning';
   title: string;
   message?: string;
 }
@@ -19,6 +19,7 @@ const iconMap = {
   success: <CheckmarkCircle24Regular style={{ color: 'var(--thot-success)' }} />,
   error: <ErrorCircle24Regular style={{ color: 'var(--thot-danger)' }} />,
   info: <Info24Regular style={{ color: 'var(--thot-info)' }} />,
+  warning: <Info24Regular style={{ color: 'var(--thot-gold)' }} />,
 };
 
 export function ToastContainer() {

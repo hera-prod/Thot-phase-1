@@ -1,0 +1,24 @@
+<think>
+The user asks: "Génère moi une image de papillon photo réaliste en macro". This is a request to create a realistic macro photograph of a butterfly. According to the instructions, we must use the generate_image tool. The tool requires a prompt, and optionally format and seed. We need to produce a prompt describing a realistic macro photograph of a butterfly. The format can be something like "1:1" or "16:9". Since macro photography often uses a close-up, maybe "3:2" or "4:5". But we can choose any allowed format. The prompt should be descriptive: "A highly detailed macro photograph of a butterfly, wings with intricate patterns, vibrant colors, shallow depth of field, crisp focus on the wings, natural lighting, high resolution, realistic, 8k". That would be good.
+
+We must not add any extra text, just the tool call. No social greetings, no extra commentary. So we output:
+
+{
+  "name": "generate_image",
+  "arguments": {
+    "prompt": "A highly detailed macro photograph of a butterfly, wings with intricate patterns, vibrant colors, shallow depth of field, crisp focus on the wings, natural lighting, high resolution, realistic, 8k",
+    "format": "1:1"
+  }
+}
+
+Make sure no extra text. That satisfies the request. No mention of any other constraints. Ensure no disallowed content. This is fine.
+
+Thus final answer.
+</think>
+{
+  "name": "generate_image",
+  "arguments": {
+    "prompt": "A highly detailed macro photograph of a butterfly, wings with intricate patterns, vibrant colors, shallow depth of field, crisp focus on the wings, natural lighting, high resolution, realistic, 8k",
+    "format": "1:1"
+  }
+}

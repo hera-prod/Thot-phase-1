@@ -2,11 +2,24 @@
   "product": "Thot Phase 1",
   "version": "1.0.0",
   "phase": 1,
-  "target": "x86_64-unknown-linux-gnu",
+  "target": "linux-x64",
   "sidecar": "thot-sidecar-x86_64-unknown-linux-gnu",
   "data_layout": "data/database, data/blobs, data/logs, data/temp, data/backups",
   "portable": true,
   "models_included": false,
-  "checksums": {},
-  "build_date": "2026-09-07"
+  "tool_runtime": {
+    "default": "llama_cpp",
+    "llama_server": {
+      "enabled": false,
+      "binary": null,
+      "version": null,
+      "sha256": null,
+      "search_dirs": ["bin/llama-server", "bin/llama-server.exe"]
+    }
+  },
+  "runtime_resolution": "Le runtime se cherche dans cet ordre : chemin absolu fourni par l'appelant, variable THOT_LLAMA_SERVER si elle est posee, puis binary puis search_dirs sous chaque racine de l'application (dossier de l'executable, racine portable, dossier de donnees), enfin le PATH en developpement seulement. Si sha256 est renseigne il est VERIFIE a chaque resolution et un fichier altere est refuse. binary: null avec enabled: true est refuse.",
+  "image_license": "FLUX Non-Commercial License v2.1",
+  "commercial_use_allowed": false,
+  "checksums_note": "Aucun checksum dans le dépôt (aucun binaire thot-sidecar* n'y figure) ; les sha256 du sidecar et du bundle sont renseignés à la release, dans l'artefact publié.",
+  "build_date": "2026-10-27"
 }

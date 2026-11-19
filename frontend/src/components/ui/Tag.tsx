@@ -1,11 +1,10 @@
 interface TagProps {
-  variant: 'chat' | 'agent' | 'done' | 'running' | 'error';
+  variant: 'chat' | 'done' | 'running' | 'error';
   children?: string;
 }
 
 const variantMap: Record<string, { bg: string; color: string }> = {
   chat: { bg: '#E9E5DD', color: 'var(--thot-text-muted)' },
-  agent: { bg: '#E9E5DD', color: 'var(--thot-text-muted)' },
   done: { bg: 'var(--thot-success-soft)', color: 'var(--thot-success)' },
   running: { bg: 'var(--thot-info-soft)', color: 'var(--thot-info)' },
   error: { bg: 'var(--thot-danger-soft)', color: 'var(--thot-danger)' },

@@ -1,0 +1,252 @@
+/* Surfaces « image » partagées par le studio Images et la conversation.
+   Les règles `img-progress*` et l'animation `img-reveal` proviennent de ImagesPage.css :
+   déplacées telles quelles (mêmes noms de classes, mêmes déclarations) pour que le studio
+   rende à l'identique. Seule addition : la palette `--img-*` est déclarée sur la carte
+   elle-même, la carte étant partagée elle ne peut plus hériter d'un ancêtre de page. */
+
+/* --- Carte de progression (ex ImagesPage.css) --- */
+
+.img-progress {
+  --img-ink: #202522;
+  --img-ivory: #f5f0e6;
+  --img-copper: #a7653f;
+  --img-copper-dark: #75432f;
+  --img-gold: #b58a43;
+  --img-line: #d9cdbd;
+  margin: 14px 8px 0;
+  border: 1px solid var(--img-line);
+  border-radius: 12px;
+  padding: 13px 14px;
+  background: rgba(245, 240, 230, .64);
+}
+
+.img-progress-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.img-progress-head > div {
+  min-width: 0;
+}
+
+.img-progress-head strong {
+  display: block;
+  font-size: 12px;
+}
+
+.img-progress-head > div span {
+  display: block;
+  overflow: hidden;
+  margin-top: 2px;
+  color: var(--img-copper-dark);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.img-progress-head > span {
+  margin-left: auto;
+  color: #625b52;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.img-progress-track {
+  height: 4px;
+  margin-bottom: 10px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--img-line);
+}
+
+.img-progress-track span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--img-copper), var(--img-gold));
+  transition: width 300ms ease;
+}
+
+.img-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.img-steps li {
+  position: relative;
+  min-height: 25px;
+  padding: 4px 0 4px 21px;
+  color: #5f5951;
+  font-size: 11px;
+}
+
+.img-steps li::before {
+  position: absolute;
+  top: 9px;
+  left: 3px;
+  width: 7px;
+  height: 7px;
+  border: 1px solid #b7aa9a;
+  border-radius: 50%;
+  content: "";
+  background: var(--img-ivory);
+}
+
+.img-steps li:not(:last-child)::after {
+  position: absolute;
+  top: 16px;
+  bottom: -4px;
+  left: 6px;
+  width: 1px;
+  content: "";
+  background: var(--img-line);
+}
+
+.img-steps li.done,
+.img-steps li.active {
+  color: var(--img-ink);
+}
+
+.img-steps li.done::before {
+  border-color: var(--img-gold);
+  background: var(--img-gold);
+}
+
+.img-steps li.active {
+  font-weight: 800;
+}
+
+.img-steps li.active::before {
+  border-color: var(--img-copper);
+  background: var(--img-copper);
+  box-shadow: 0 0 0 4px rgba(167, 101, 63, .13);
+}
+
+.img-segments {
+  display: flex;
+  gap: 4px;
+  margin: 6px 0 0;
+}
+
+.img-segments i {
+  height: 4px;
+  flex: 1;
+  border-radius: 3px;
+  background: var(--img-line);
+}
+
+.img-segments i.fill {
+  background: var(--img-copper);
+}
+
+/* --- Révélation d'une image (ex ImagesPage.css) --- */
+
+.img-reveal {
+  animation: img-reveal 560ms cubic-bezier(.22, .9, .3, 1);
+}
+
+@keyframes img-reveal {
+  from { opacity: 0; transform: scale(.965); filter: blur(5px); }
+  to { opacity: 1; transform: scale(1); filter: blur(0); }
+}
+
+/* --- Carte d'une image GÉNÉRÉE, dans une bulle de conversation ---
+   Présence au-dessus de la vignette d'envoi (120 px) mais contenue : la carte ne dépasse
+   jamais la colonne et garde la bulle de texte en première lecture. La résolution en grand
+   est déléguée à la vue de détail de la Galerie, on ne duplique pas une seconde modale. */
+
+.genimg-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.genimg {
+  display: flex;
+  width: fit-content;
+  max-width: 100%;
+  margin: 0;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.genimg-frame {
+  position: relative;
+  display: block;
+  max-width: 100%;
+  border: 1px solid var(--thot-border);
+  border-radius: 14px;
+  padding: 6px;
+  background: var(--thot-surface-raised);
+  box-shadow: var(--thot-shadow-image);
+  transition: border-color var(--thot-transition-fast), box-shadow var(--thot-transition-fast), transform var(--thot-transition-fast);
+}
+
+/* Filet or : même signature que la carte de prompt du studio. */
+.genimg-frame::before {
+  position: absolute;
+  top: 0;
+  left: 14px;
+  width: 34px;
+  height: 2px;
+  content: "";
+  background: linear-gradient(90deg, var(--thot-copper), var(--thot-gold));
+}
+
+.genimg-frame:hover {
+  border-color: rgba(184, 107, 61, .55);
+  box-shadow: 0 22px 58px rgba(50, 31, 18, .22);
+  transform: translateY(-1px);
+}
+
+.genimg-image {
+  display: block;
+  max-width: 320px;
+  max-height: 340px;
+  border-radius: 9px;
+  object-fit: contain;
+  background: var(--thot-surface-2);
+}
+
+.genimg-caption {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 0 2px;
+}
+
+.genimg-kicker {
+  color: var(--thot-copper);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+}
+
+.genimg-id {
+  overflow: hidden;
+  color: var(--thot-text-faint);
+  font-family: var(--thot-font-mono);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.genimg-link {
+  margin-left: auto;
+  flex: 0 0 auto;
+  color: var(--thot-text-muted);
+  font-size: 11px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.genimg-link:hover {
+  color: var(--thot-copper);
+}

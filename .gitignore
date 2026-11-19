@@ -1,46 +1,66 @@
-# Modèles locaux très volumineux (README versionné, GGUF exclus)
-models/*
-!models/README.md
-*.gguf
-*.safetensors
+# Dépendances
+node_modules/
+frontend/node_modules/
+.venv/
+venv/
 
-# Données locales SQLite
+# Caches Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+.coverage
+htmlcov/
+coverage/
+
+# Caches JS/TS
+.tsbuildinfo
+*.tsbuildinfo
+.vite/
+.eslintcache
+
+# Données locales
 data/
 *.db
 *.db-shm
 *.db-wal
+*.log
 
-# Fichiers Python
-__pycache__/
-*.py[cod]
-.venv/
-venv/
-.env
-.env.*
+# Modèles (poids volumineux) — seul le README est conservé
+models/*
+!models/README.md
+*.gguf
+*.safetensors
+*.onnx
+*.pt
+*.pth
+*.ckpt
 
-# Frontend
-node_modules/
-frontend/node_modules/
+# Binaires et archives (jamais versionnés)
+thot-sidecar*
+!thot-sidecar*.spec
+*.whl
+*.zip
+*.tar*
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Artefacts de build
+dist/
+build/
+release/
 frontend/dist/
 
-# Tauri / Rust
-src-tauri/target/
-src-tauri/binaries/
-*.AppImage
-*.msi
-*.dmg
+# Secrets
+.env
+.env.*
+!.env.example
 
-# Python packaging
-build/
-dist/
-*.spec
-
-# Référence documentation (clone Depot_Github) — ne pas versionner le gros clone
-Depot_Github/
-Flux2-Klein-9b/
-
-# Fichiers temporaires et système
-tmp/
-*.log
+# Système
 .DS_Store
-.pytest_cache/
+Thumbs.db
+Desktop.ini
+._*

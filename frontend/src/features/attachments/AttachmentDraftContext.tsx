@@ -1,5 +1,6 @@
 import { createContext, useContext, useCallback, useState, useEffect, type ReactNode } from "react";
 import type { PendingAttachment, AttachmentDraftState } from "./attachmentTypes";
+import { stageMetaOf, dedupeKey } from "./attachmentTypes";
 import { MAX_ATTACHMENTS } from "./attachmentValidation";
 import { showToast } from "../../components/ui/Toast";
 
@@ -11,14 +12,11 @@ export function AttachmentDraftProvider({ children }: { children: ReactNode }) {
 
   const addFiles = useCallback((files: File[]) => {
     setAttachments((prev) => {
-      // Dedup §6 + annexe 09 : même nom déjà présent → ignore (évite triple dépôt HTML5+natif+page)
-      // Fenêtre courte : seul le nom suffit (staged placeholder a size 0 vs réel)
+      // Dedup §6 + annexe 10 : nom + taille + stageItemId (le nom seul collisionne)
+      const seen = new Set(prev.map(p => dedupeKey(p.name, p.size, p.stageItemId)));
       const deduped = files.filter(f => {
-        const staged = (f as unknown as { _stagedPath?: string })._stagedPath;
-        if (staged) {
-          return !prev.some(p => p.name === f.name);
-        }
-        return !prev.some(p => p.name === f.name);
+        const meta = stageMetaOf(f);
+        return !seen.has(dedupeKey(f.name, f.size, meta._stageItemId));
       });
       if (deduped.length === 0 && files.length > 0) {
         // Tous doublons → silencieux (évite 3x)
@@ -35,8 +33,7 @@ export function AttachmentDraftProvider({ children }: { children: ReactNode }) {
       }
       const mapped: PendingAttachment[] = slice.map((file) => {
         const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
-        const stagedPath = (file as unknown as { _stagedPath?: string })._stagedPath;
-        const stageItemId = (file as unknown as { _stageItemId?: string })._stageItemId;
+        const { _stagedPath: stagedPath, _stageItemId: stageItemId, _previewToken: previewToken } = stageMetaOf(file);
         const WARN_IMAGE_BYTES = 5*1024*1024;
         const needsResize = file.size > WARN_IMAGE_BYTES && !isPdf;
         // Preview : File réel → objectURL, stagé (size 0) → convertFileSrc asset://
@@ -60,6 +57,7 @@ export function AttachmentDraftProvider({ children }: { children: ReactNode }) {
           kind: isPdf ? "pdf" : "image",
           stagedPath,
           stageItemId,
+          previewToken,
           needsResize,
         };
       });
@@ -68,7 +66,7 @@ export function AttachmentDraftProvider({ children }: { children: ReactNode }) {
   }, []);
 
   // Annexe 09 §5-6 et §7 : même pipeline que le bouton parcourir (T-DnD-09)
-  // Les fichiers stagés par Tauri (stage_dropped_files) arrivent via custom event thot:add-files
+  // Les fichiers stagés côté processus principal (stage_dropped_files) arrivent via custom event thot:add-files
   useEffect(() => {
     const handler = (e: Event) => {
       const files = (e as CustomEvent<File[]>).detail ?? [];

@@ -1,0 +1,36 @@
+{
+  "id": "chatcmpl-0b6409f8-77d4-44ef-bbec-be3ce5a9b2df",
+  "object": "chat.completion",
+  "created": 1790552420,
+  "model": "models/LLM/LFM2.5-8B-A1B-UD-Q4_K_M.gguf",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": null,
+        "function_call": {
+          "name": "generate_image",
+          "arguments": "{\"prompt\": \"Photographie macro réaliste d'un papillon posé sur une fleur, ailes détaillées, profondeur de champ courte, lumière naturelle douce, couleurs vives, texture des ailes, détail des motifs, fond flou, style hyperréaliste, macro\\u2011photographie, 1:1\"}"
+        },
+        "tool_calls": [
+          {
+            "id": "call__0_generate_image_cmpl-0b6409f8-77d4-44ef-bbec-be3ce5a9b2df",
+            "type": "function",
+            "function": {
+              "name": "generate_image",
+              "arguments": "{\"prompt\": \"Photographie macro réaliste d'un papillon posé sur une fleur, ailes détaillées, profondeur de champ courte, lumière naturelle douce, couleurs vives, texture des ailes, détail des motifs, fond flou, style hyperréaliste, macro\\u2011photographie, 1:1\"}"
+            }
+          }
+        ]
+      },
+      "logprobs": null,
+      "finish_reason": "tool_calls"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 3245,
+    "completion_tokens": 70,
+    "total_tokens": 3315
+  }
+}

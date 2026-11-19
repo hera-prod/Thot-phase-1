@@ -1,0 +1,66 @@
+/* Classes spécifiques à la carte des modèles. La palette --set-* vient de .set-page. */
+.set-models {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 4px;
+}
+
+.set-model {
+  padding: 12px 14px;
+  border: 1px solid var(--set-line);
+  border-radius: 12px;
+  background: rgba(245, 240, 230, 0.5);
+}
+
+.set-model-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.set-model-role {
+  margin: 0 0 2px;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--set-ink);
+}
+
+.set-model-name {
+  margin: 0;
+  font-size: 12px;
+  color: var(--set-ink-soft);
+}
+
+.set-model-vendor {
+  color: var(--set-copper-dark);
+}
+
+.set-model-meta {
+  margin: 4px 0 6px;
+  font-family: "IBM Plex Mono", var(--thot-font-mono);
+  font-size: 11px;
+  color: var(--set-ink-soft);
+}
+
+.set-model-license {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--set-ink-soft);
+}
+
+.set-badge.is-community {
+  color: var(--set-copper-dark);
+  background: rgba(181, 138, 67, 0.2);
+}
+
+.set-badge.is-danger {
+  color: var(--set-danger);
+  background: rgba(167, 71, 61, 0.12);
+}
+

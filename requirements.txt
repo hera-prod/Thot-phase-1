@@ -1,11 +1,49 @@
 # Thot Phase 1 — dépendances Python (PyInstaller)
-# Installation sans venv : pip install -r requirements.txt
+# Installation via pip : pip install -r requirements.txt — le venv .venv est créé
+# au premier lancement par les lanceurs (lancer-linux.sh / lancer-macos.command / lancer-windows.bat)
 # Pour GPU CUDA : pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu121 --force-reinstall --no-cache-dir
 
-llama-cpp-python>=0.3.0
+llama-cpp-python==0.3.34
 sqlalchemy>=2.0
 pymupdf>=1.24
 pillow>=10.0
+torch==2.13.0
+torchvision==0.28.0
+diffusers==0.39.0
+gguf==0.19.0
+safetensors==0.8.0
+tokenizers==0.22.2
+jinja2==3.1.6
+psutil==5.9.8
+
+# Recherche sémantique — ColBERT (`backend/search/vectors.py`). `transformers` était
+# déjà IMPORTÉ par le dépôt (PaddleOCR-VL, encodeur de texte FLUX) sans être
+# DÉCLARÉ : une installation par ce fichier ne pouvait donc pas démarrer l'OCR. Il est
+# déclaré ici pour cette raison autant que pour ColBERT.
+# La version est celle qu'exige le worker PaddleOCR-VL (`models/README.md`), pas un
+# choix de la tâche 2.5 : deux versions dans un sidecar PyInstaller, c'est deux
+# moteurs de tokenisation qui divergent sur le même texte.
+transformers>=4.56,<6
+# `huggingface_hub` est la dépendance de `from_pretrained`. Le modèle est lu dans
+# `models/` et jamais sur le hub (off-ligne), mais la bibliothèque reste requise au
+# chargement — d'où la déclaration, pour que `pip install -r requirements.txt` suffise.
+huggingface_hub>=0.34
+
+# Tableurs : openpyxl (voie principale xlsx, valeurs via data_only) + pandas
+# (repli xlsx/ods). Déclarés car importés par backend/ingestion/sheets.py.
+# odfpy est le moteur .ods de pandas : SANS lui, `read_excel` lève un ImportError
+# et un `.ods` revenait vide — donc « ingéré » sans rien avoir lu.
+# xlrd n'est PAS déclaré, et c'est délibéré : un `.xls` est un conteneur OLE2 que
+# le dépôt refuse déjà à l'entrée (signature inconnue), donc le lire ici
+# annoncerait une capacité que Thot ne sait pas délivrer. Voir
+# `sheets._motif_classeur_illisible` pour le refus explicite qui remplace cela.
+openpyxl>=3.1
+pandas>=2.0
+odfpy>=1.4
+# Parseur XML durci (xlsx/ods). Sans lui, Thot REFUSE le flux XML d'un classeur
+# au lieu de laisser la stdlib expanser DTD/entités : un refus borné par
+# position (préfixe de 64 Kio) ne suffit pas. Voir `sheets._iterparse_xml`.
+defusedxml>=0.7
 
 # Build
 pyinstaller>=6.0

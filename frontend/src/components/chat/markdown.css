@@ -1,0 +1,124 @@
+/* Markdown des messages — la COUCHE DE THÈME, et rien d'autre.
+ *
+ * Répartition du travail après l'ajout de Tailwind :
+ *   - streamdown émet des CLASSES → Tailwind les compile (src/styles/tailwind.css)
+ *   - les couleurs shadcn de streamdown → mappées sur nos tokens (@theme)
+ *   - ce fichier → ce que ni l'un ni l'autre ne peut savoir.
+ *
+ * Il a d'abord été écrit comme un remplacement complet de Tailwind, à la main.
+ * Ça a tenu trois commits puis cassé : `block` sur les lignes de code et
+ * `text-[var(--sdm-c)]` sur les tokens sont des utilitaires, et on les avait
+ * forgets. D'où la règle de ce fichier : ne plus réécrire une mécanique, only
+ * une intention visuelle.
+ */
+
+/* --- Bloc de code ------------------------------------------------------ */
+
+[data-streamdown="code-block"] {
+  /* `content-visibility: auto` est posé EN STYLE INLINE par streamdown.
+     Dans le WebKit d'Electron il rend le code hors écran non sélectionnable et
+     introuvable au Ctrl+F. `!important` parce que c'est inline. */
+  content-visibility: visible !important;
+  contain-intrinsic-size: none !important;
+
+  /* Le `overflow: hidden` est ici pour que l'en-tête et le corps suivent la
+     même arrondi. Sans lui, le filet du corps traverse les coins. */
+  overflow: hidden;
+  border-radius: var(--thot-radius-md);
+  border: 1px solid var(--thot-border-subtle);
+  background: var(--thot-canvas);
+}
+
+[data-streamdown="code-block-header"] {
+  /* Tailwind donne `flex h-8 items-center text-muted-foreground text-xs`. Il ne
+     donne ni le fond ni le filet qui sépare l'en-tête du code. */
+  background: var(--thot-surface-subtle);
+  border-bottom: 1px solid var(--thot-border-subtle);
+  font-family: var(--thot-font-mono);
+  color: var(--thot-text-faint);
+}
+
+[data-streamdown="code-block-body"] {
+  /* `min-width: 0` est le point non négociable : un enfant de flex refuse de
+     rétrécir sans lui. Sans cette ligne, une ligne de code longue ÉLARGIT la
+     bulle au lieu de défiler. Unsloth a le même garde-fou, avec le même
+     commentaire : « Wide lines must scroll inside the thread column, not
+     widen past the composer (flex min-width:auto). » */
+  min-width: 0;
+  max-width: 100%;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
+
+[data-streamdown="code-block-body"] pre {
+  padding: 10px 12px;
+  background: transparent;
+}
+
+/* Le code ne se replie PAS : une indentation qui tombe à la ligne rend le
+   code illisible et fausse la structure. C'est le défilement horizontal qui
+   prend le relais. */
+[data-streamdown="code-block-body"] code {
+  white-space: pre;
+  font-size: 12.5px;
+  line-height: 1.55;
+  background: transparent;
+  border: none;
+  padding: 0;
+}
+
+/* Un fence en cours de stream : le modèle n'a pas encore envoyé sa clôture. */
+[data-streamdown="code-block"][data-incomplete] {
+  border-style: dashed;
+  border-color: var(--thot-border);
+}
+
+/* --- Code inline ------------------------------------------------------- */
+
+/* Tailwind donne `rounded bg-muted px-1.5`. On veut un filet et notre rayon. */
+.mdBody [data-streamdown="inline-code"] {
+  font-family: var(--thot-font-mono);
+  font-size: 0.86em;
+  border-radius: var(--thot-radius-sm);
+  border: 1px solid var(--thot-border-subtle);
+  color: var(--thot-ink);
+  overflow-wrap: normal;
+}
+
+/* --- Repli d'un bloc qui a échoué -------------------------------------- */
+
+.mdBlocEnPanne {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--thot-danger-soft);
+  border-radius: var(--thot-radius-md);
+  background: var(--thot-danger-soft);
+  font-family: var(--thot-font-mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* --- Images ----------------------------------------------------------- */
+
+/* Une image distante refusée : on le DIT plutôt que de laisser une image
+   cassée parler à notre place. */
+.mdImageRetiree {
+  display: inline-block;
+  padding: 4px 8px;
+  border: 1px dashed var(--thot-border-strong);
+  border-radius: var(--thot-radius-sm);
+  background: var(--thot-surface-subtle);
+  color: var(--thot-text-faint);
+  font-size: 11px;
+  font-style: italic;
+}
+
+/* --- Longs mots ------------------------------------------------------- */
+
+/* Une URL ou un identifiant sans espace ferait déborder la bulle : leahy coupe. */
+.mdBody {
+  overflow-wrap: anywhere;
+}

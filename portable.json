@@ -1,5 +1,5 @@
 {
   "format_version": 1,
   "mode": "portable_strict",
-  "notes": "Présence de ce fichier active le mode portable : données dans ./data (database/blobs/logs/temp). Supprimer ce fichier pour repasser en mode installé XDG."
+  "notes": "Présence de ce fichier active le mode portable : données dans ./data (database/blobs/logs/temp/backups). Supprimer ce fichier pour repasser en mode installé XDG."
 }

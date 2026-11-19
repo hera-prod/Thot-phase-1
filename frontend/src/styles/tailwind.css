@@ -1,0 +1,68 @@
+/* Tailwind v4 — les UTILITAires seulement, SANS preflight.
+ *
+ * POURQUOI C'EST ICI
+ * streamdown n'émet pas du HTML : il émet des CLASSES Tailwind. Vérifié dans
+ * le DOM réel, 62 classes distinctes, dont deux qui portent seules la
+ * fonctionnalité :
+ *
+ *   - `block` sur chaque ligne de code → sans lui les lignes se replient sur
+ *     une seule ;
+ *   - `text-[var(--sdm-c,inherit)]` sur chaque token → sans lui shiki écrit
+ *     `--sdm-c: #D73A49` dans le style et PLUS PERSONNE ne le lit : le code
+ *     s'affiche en noir.
+ *
+ * Réécrire ces règles à la main serait possible — c'est ce qu'on a tenté, et
+ * ça marche jusqu'au prochain utilitaire qu'on oublie. Un projet externe
+ * éprouvé fait exactement ce qu'on fait ici : Tailwind compile,
+ * puis une couche de thème par-dessus.
+ *
+ * SANS PREFLIGHT, et c'est délibéré : la v4 réinitialise toute l'app
+ * (`*, ::before, ::after { margin: 0; padding: 0 }`). Cette app a 8 mois de CSS
+ * écrit à la main ; on ne le fait pas passer sous un tapis roulant. Les deux
+ * lignes `@import ... layer(...)` ci-dessous sont la façon documentée de
+ * prendre les utilitaires sans le reset.
+ *
+ * `@source` fait scanner le dist de streamdown : ses classes y sont écrites en
+ * clair, Tailwind ne les verrait pas sinon.
+ */
+
+@layer theme, base, components, utilities;
+@import 'tailwindcss/theme.css' layer(theme);
+@import 'tailwindcss/utilities.css' layer(utilities);
+
+@source '../../node_modules/streamdown/dist/*.js';
+
+/* Les couleurs que streamdown utilise sont des variables shadcn. Sans elles,
+ * Tailwind n'émet RIEN : vérifié, `bg-muted`, `border-border` et
+ * `text-muted-foreground` étaient absents du CSS produit, donc un tableau
+ * sans fond d'en-tête ni filet, et un bloc de citation sans barre.
+ *
+ * On ne recopie pas une palette : chaque nom shadcn pointe sur un token Thot.
+ * Un seul endroit décide des couleurs, et streamdown s'yrange par accident.
+ */
+@theme {
+  --color-background: var(--thot-surface-1);
+  --color-foreground: var(--thot-text);
+  --color-card: var(--thot-surface-raised);
+  --color-card-foreground: var(--thot-text);
+  --color-popover: var(--thot-surface-raised);
+  --color-popover-foreground: var(--thot-text);
+  --color-primary: var(--thot-gold);
+  --color-primary-foreground: var(--thot-ivory);
+  --color-secondary: var(--thot-surface-2);
+  --color-secondary-foreground: var(--thot-text);
+  --color-muted: var(--thot-surface-2);
+  --color-muted-foreground: var(--thot-text-muted);
+  --color-accent: var(--thot-surface-subtle);
+  --color-accent-foreground: var(--thot-text);
+  --color-destructive: var(--thot-danger);
+  --color-destructive-foreground: var(--thot-ivory);
+  --color-border: var(--thot-border-subtle);
+  --color-input: var(--thot-border-subtle);
+  --color-ring: var(--thot-gold);
+  --color-sidebar: var(--thot-canvas);
+  --color-sidebar-foreground: var(--thot-text);
+  --color-sidebar-border: var(--thot-sidebar-border);
+  --color-sidebar-accent: var(--thot-surface-2);
+  --color-sidebar-primary: var(--thot-gold);
+}
